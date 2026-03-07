@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>外链数据导入</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <div class="container">
+    <header class="toolbar">
+      <button id="import-btn" type="button">导入 CSV</button>
+      <button id="clear-btn" type="button">清除数据</button>
+      <button id="cleanse-btn" type="button">清洗 URL</button>
+      <button id="template-toggle-btn" type="button">外链模板</button>
+      <button id="settings-btn" type="button">⚙️</button>
+      <button id="auto-comment-btn" type="button">自动评论</button>
+      <input type="file" id="file-input" accept=".csv" hidden>
+    </header>
+
+    <section id="api-key-section" hidden>
+      <div class="api-key-form">
+        <label for="api-key-input">API Key</label>
+        <input type="password" id="api-key-input" placeholder="输入通义千问 API Key">
+        <button id="api-key-save-btn" type="button">保存</button>
+      </div>
+      <div id="api-key-message" class="api-key-message" hidden></div>
+    </section>
+
+    <div id="auto-comment-status" class="auto-comment-status" hidden></div>
+
+    <div id="loading-indicator" class="loading" hidden>
+      <span class="spinner"></span>
+      <span>正在处理...</span>
+    </div>
+
+    <div id="cleanse-progress" class="cleanse-progress" hidden>
+      <div class="progress-bar-container">
+        <div class="progress-bar" id="cleanse-progress-bar"></div>
+      </div>
+      <span id="cleanse-progress-text">已检查 0 / 0</span>
+    </div>
+
+    <section id="summary-section" class="summary" hidden>
+      <h3>导入统计</h3>
+      <div class="summary-grid">
+        <div class="summary-item">
+          <span class="summary-label">总行数</span>
+          <span id="stat-total" class="summary-value">0</span>
+        </div>
+        <div class="summary-item">
+          <span class="summary-label">成功导入</span>
+          <span id="stat-success" class="summary-value">0</span>
+        </div>
+        <div class="summary-item">
+          <span class="summary-label">去重移除</span>
+          <span id="stat-duplicates" class="summary-value">0</span>
+        </div>
+        <div class="summary-item">
+          <span class="summary-label">解析失败</span>
+          <span id="stat-failed" class="summary-value">0</span>
+        </div>
+      </div>
+    </section>
+
+    <section id="cleanse-summary-section" class="summary" hidden>
+      <h3>清洗统计</h3>
+      <div class="summary-grid">
+        <div class="summary-item">
+          <span class="summary-label">可评论</span>
+          <span id="stat-commentable" class="summary-value">0</span>
+        </div>
+        <div class="summary-item">
+          <span class="summary-label">需登录</span>
+          <span id="stat-login-required" class="summary-value">0</span>
+        </div>
+        <div class="summary-item">
+          <span class="summary-label">不确定</span>
+          <span id="stat-uncertain" class="summary-value">0</span>
+        </div>
+        <div class="summary-item">
+          <span class="summary-label">已过滤</span>
+          <span id="stat-filtered-out" class="summary-value">0</span>
+        </div>
+      </div>
+    </section>
+
+    <section id="status-filter-section" hidden>
+      <div class="status-filter">
+        <button data-filter="all" class="active">全部</button>
+        <button data-filter="commentable">✅ 可评论</button>
+        <button data-filter="login_required">❌ 需登录</button>
+        <button data-filter="uncertain">⚠️ 不确定</button>
+        <button data-filter="filtered_out">🚫 已过滤</button>
+      </div>
+    </section>
+
+    <section id="template-section" hidden>
+      <div class="template-header">
+        <select id="template-select">
+          <option value="">-- 选择模板 --</option>
+        </select>
+        <div class="template-header-actions">
+          <button id="template-add-btn" type="button" class="template-icon-btn" title="添加模板">＋</button>
+          <button id="template-edit-current-btn" type="button" class="template-icon-btn" title="编辑" hidden>✏️</button>
+          <button id="template-delete-current-btn" type="button" class="template-icon-btn template-icon-btn-danger" title="删除" hidden>🗑️</button>
+        </div>
+      </div>
+
+      <div id="template-form" class="template-form" hidden>
+        <div class="form-group">
+          <label for="template-name">名称</label>
+          <input type="text" id="template-name" placeholder="输入名称">
+        </div>
+        <div class="form-group">
+          <label for="template-url">网址</label>
+          <input type="text" id="template-url" placeholder="输入网址">
+        </div>
+        <div class="form-group">
+          <label for="template-keyword">关键词</label>
+          <input type="text" id="template-keyword" placeholder="输入关键词">
+        </div>
+        <div class="form-actions">
+          <button id="template-save-btn" type="button">保存</button>
+          <button id="template-cancel-btn" type="button">取消</button>
+        </div>
+      </div>
+
+      <div id="template-detail" class="template-card" hidden></div>
+      <div id="template-empty" class="template-empty">暂无模板，请点击 ＋ 添加</div>
+    </section>
+
+    <section class="table-container">
+      <table id="data-table">
+        <thead>
+          <tr>
+            <th data-column="pageAS">页面 AS</th>
+            <th data-column="sourceUrl">源页面 URL</th>
+            <th data-column="linkType">链接类型</th>
+            <th data-column="firstSeenDate">首次发现</th>
+            <th data-column="lastSeenDate">上次发现</th>
+            <th data-column="commentStatus">评论状态</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </div>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>

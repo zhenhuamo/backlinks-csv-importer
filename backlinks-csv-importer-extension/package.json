@@ -1,0 +1,25 @@
+{
+  "name": "backlinks-csv-importer-extension",
+  "version": "1.0.0",
+  "description": "Chrome extension for importing backlinks CSV data",
+  "scripts": {
+    "build": "esbuild src/sidepanel.ts --bundle --outfile=sidepanel.js --format=iife && esbuild src/background.ts --bundle --outfile=background.js --format=iife && esbuild src/content-script.ts --bundle --outfile=content-script.js --format=iife",
+    "test": "jest"
+  },
+  "keywords": [],
+  "license": "ISC",
+  "dependencies": {
+    "@types/papaparse": "^5.5.2",
+    "papaparse": "^5.5.3"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.37",
+    "@types/jest": "^30.0.0",
+    "esbuild": "^0.27.3",
+    "fast-check": "^4.5.3",
+    "jest": "^30.2.0",
+    "jest-environment-jsdom": "^30.2.0",
+    "ts-jest": "^29.4.6",
+    "typescript": "^5.9.3"
+  }
+}
