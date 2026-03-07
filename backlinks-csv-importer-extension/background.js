@@ -66,6 +66,56 @@
     const content = data?.choices?.[0]?.message?.content;
     return { success: true, comment: content };
   }
+  var CAPTCHA_VL_MODEL = "qwen-vl-plus";
+  function cleanCaptchaResult(raw) {
+    return raw.replace(/[\s\.,;:!?'"，。；：！？、\-\(\)\[\]{}\u3000]/g, "");
+  }
+  async function recognizeCaptcha(imageData, apiKey) {
+    if (!apiKey?.trim()) {
+      return { success: false, error: "\u8BF7\u5148\u914D\u7F6E API Key" };
+    }
+    if (!imageData?.trim()) {
+      return { success: false, error: "\u9A8C\u8BC1\u7801\u56FE\u7247\u6570\u636E\u4E3A\u7A7A" };
+    }
+    const body = JSON.stringify({
+      model: CAPTCHA_VL_MODEL,
+      messages: [{
+        role: "user",
+        content: [
+          { type: "image_url", image_url: { url: imageData } },
+          { type: "text", text: "\u8BC6\u522B\u8FD9\u5F20\u9A8C\u8BC1\u7801\u56FE\u7247\u4E2D\u7684\u5B57\u7B26\uFF0C\u53EA\u8FD4\u56DE\u7EAF\u5B57\u7B26\u5185\u5BB9\uFF0C\u4E0D\u8981\u4EFB\u4F55\u89E3\u91CA\u3002" }
+        ]
+      }]
+    });
+    let response;
+    try {
+      response = await fetch(DASHSCOPE_ENDPOINT, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`
+        },
+        body
+      });
+    } catch {
+      return { success: false, error: "\u7F51\u7EDC\u9519\u8BEF" };
+    }
+    if (!response.ok) {
+      if (response.status === 401) return { success: false, error: "API Key \u65E0\u6548" };
+      if (response.status === 429) return { success: false, error: "API \u8C03\u7528\u9891\u7387\u8D85\u9650" };
+      return { success: false, error: "AI \u670D\u52A1\u5F02\u5E38" };
+    }
+    try {
+      const data = await response.json();
+      const content = data?.choices?.[0]?.message?.content;
+      if (!content) return { success: false, error: "\u8BC6\u522B\u7ED3\u679C\u4E3A\u7A7A" };
+      const cleaned = cleanCaptchaResult(content);
+      if (!cleaned) return { success: false, error: "\u672A\u80FD\u8BC6\u522B\u9A8C\u8BC1\u7801\u5185\u5BB9" };
+      return { success: true, text: cleaned };
+    } catch {
+      return { success: false, error: "AI \u8FD4\u56DE\u89E3\u6790\u5931\u8D25" };
+    }
+  }
   function snapshotToText(snapshot) {
     const lines = [];
     lines.push(`\u3010\u9875\u9762\u6807\u9898\u3011${snapshot.title}`);
@@ -175,6 +225,16 @@
     if (!apiKey?.trim()) {
       return { success: false, error: "\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u914D\u7F6E API Key" };
     }
+    let captchaText = null;
+    let captchaFailed = false;
+    if (snapshot.captchaInfo?.type === "simple_image") {
+      const captchaResult = await recognizeCaptcha(snapshot.captchaInfo.imageData, apiKey);
+      if (captchaResult.success && captchaResult.text) {
+        captchaText = captchaResult.text;
+      } else {
+        captchaFailed = true;
+      }
+    }
     const body = JSON.stringify({
       model: MODEL,
       messages: [
@@ -210,11 +270,30 @@
         cleaned = cleaned.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
       }
       const plan = JSON.parse(cleaned);
+      let finalActions = plan.actions;
+      let finalHasCaptcha = plan.hasCaptcha || false;
+      if (captchaText && snapshot.captchaInfo) {
+        const captchaAction = {
+          type: "type",
+          selector: snapshot.captchaInfo.inputSelector,
+          value: captchaText
+        };
+        const submitIdx = finalActions.findIndex((a) => a.type === "click");
+        if (submitIdx >= 0) {
+          finalActions = [...finalActions.slice(0, submitIdx), captchaAction, ...finalActions.slice(submitIdx)];
+        } else {
+          finalActions = [...finalActions, captchaAction];
+        }
+        finalHasCaptcha = false;
+      } else if (captchaFailed) {
+        finalActions = finalActions.filter((a) => a.type !== "click");
+        finalHasCaptcha = true;
+      }
       return {
         success: true,
         comment: plan.comment,
-        actions: plan.actions,
-        hasCaptcha: plan.hasCaptcha || false
+        actions: finalActions,
+        hasCaptcha: finalHasCaptcha
       };
     } catch (e) {
       return { success: false, error: "AI \u8FD4\u56DE\u683C\u5F0F\u89E3\u6790\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5" };
@@ -461,6 +540,26 @@
           sendResponse(r);
         } catch (e) {
           sendResponse({ success: false, error: "\u91CD\u8BD5\u5931\u8D25: " + (e?.message || e) });
+        }
+      })();
+      return true;
+    }
+    if (action === "captcha-recognize") {
+      const { imageData, apiKey } = payload;
+      (async () => {
+        try {
+          if (!imageData) {
+            sendResponse({ success: false, error: "\u9A8C\u8BC1\u7801\u56FE\u7247\u6570\u636E\u7F3A\u5931" });
+            return;
+          }
+          if (!apiKey) {
+            sendResponse({ success: false, error: "API Key \u7F3A\u5931" });
+            return;
+          }
+          const r = await recognizeCaptcha(imageData, apiKey);
+          sendResponse(r);
+        } catch (e) {
+          sendResponse({ success: false, error: "\u9A8C\u8BC1\u7801\u8BC6\u522B\u5931\u8D25: " + (e?.message || e) });
         }
       })();
       return true;

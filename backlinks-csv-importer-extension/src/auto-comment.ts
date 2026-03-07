@@ -1,5 +1,8 @@
 import { LinkTemplate } from './types';
 
+/** 验证码错误关键词（用于重试判断） */
+const CAPTCHA_ERROR_KEYWORDS = ['验证码', 'captcha', '認証コード', '認証', 'verification code', 'wrong code', 'incorrect code'];
+
 /**
  * 更新 Side Panel 状态区域文本和样式
  */
@@ -39,6 +42,16 @@ export async function loadApiKey(): Promise<string | null> {
   const result = await chrome.storage.local.get(['dashscopeApiKey']);
   return result.dashscopeApiKey || null;
 }
+
+/**
+ * 判断错误信息是否为验证码相关错误
+ */
+function isCaptchaError(message: string): boolean {
+  if (!message) return false;
+  const lower = message.toLowerCase();
+  return CAPTCHA_ERROR_KEYWORDS.some(kw => lower.includes(kw.toLowerCase()));
+}
+
 
 /**
  * AI 驱动的自动评论流程：
@@ -136,6 +149,8 @@ async function runAutoComment(): Promise<void> {
     let finalCaptcha = hasCaptcha;
     let retryCount = 0;
     const MAX_RETRIES = 3;
+    let captchaRetryCount = 0;
+    const MAX_CAPTCHA_RETRIES = 2;
     let lastComment = analyzeResp.comment || '';
 
     for (let round = 0; round < 5; round++) {
@@ -196,10 +211,56 @@ async function runAutoComment(): Promise<void> {
       }
 
       if (verifyResp.status === 'error') {
-        // 还有重试次数，自动纠错（仅在评论不可见时才到达此处）
+        const errMsg = verifyResp.message || '未知错误';
+        
+        // 验证码错误：独立重试逻辑
+        if (isCaptchaError(errMsg)) {
+          if (captchaRetryCount < MAX_CAPTCHA_RETRIES) {
+            captchaRetryCount++;
+            updateStatus(`验证码识别错误，正在重新获取验证码并重试（${captchaRetryCount}/${MAX_CAPTCHA_RETRIES}）...`, 'info');
+
+            // 重新截取快照（获取刷新后的新验证码图片）
+            const captchaSnapResp = await chrome.runtime.sendMessage({
+              action: 'snapshot-page',
+              payload: { tabId },
+            });
+            if (!captchaSnapResp?.success) {
+              updateStatus('验证码重试失败: 无法获取页面快照', 'error');
+              return;
+            }
+
+            // 重新 AI 分析（含新验证码识别）
+            const captchaRetryAnalyze = await chrome.runtime.sendMessage({
+              action: 'ai-analyze',
+              payload: { snapshot: captchaSnapResp.snapshot, template, apiKey },
+            });
+            if (!captchaRetryAnalyze?.success || !captchaRetryAnalyze.actions?.length) {
+              updateStatus('验证码重试失败: AI 分析失败', 'error');
+              return;
+            }
+
+            lastComment = captchaRetryAnalyze.comment || lastComment;
+
+            updateStatus(`正在重新填写验证码并提交（第 ${captchaRetryCount} 次重试）...`, 'info');
+            const captchaRetryExec = await chrome.runtime.sendMessage({
+              action: 'execute-actions',
+              payload: { tabId, actions: captchaRetryAnalyze.actions },
+            });
+            if (!captchaRetryExec?.success) {
+              updateStatus('验证码重试执行失败', 'error');
+              return;
+            }
+            continue;
+          }
+          
+          // 验证码重试次数用完
+          updateStatus('验证码多次识别失败，请手动完成验证码并提交', 'warning');
+          return;
+        }
+
+        // 非验证码错误：使用现有的评论内容重试逻辑
         if (retryCount < MAX_RETRIES) {
           retryCount++;
-          const errMsg = verifyResp.message || '未知错误';
           updateStatus(`提交失败（${errMsg}），正在自动修正并重试（${retryCount}/${MAX_RETRIES}）...`, 'info');
 
           // 重新截取快照（包含错误信息）

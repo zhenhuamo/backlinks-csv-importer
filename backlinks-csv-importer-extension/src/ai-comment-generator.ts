@@ -96,6 +96,79 @@ export async function generateComment(
 
 
 // ============================================================
+// 验证码识别：调用多模态 AI 识别简单图片验证码
+// ============================================================
+
+const CAPTCHA_VL_MODEL = 'qwen-vl-plus';
+
+/**
+ * 清洗验证码识别结果：去除空格、标点等非验证码字符
+ */
+export function cleanCaptchaResult(raw: string): string {
+  return raw.replace(/[\s\.,;:!?'"，。；：！？、\-\(\)\[\]{}\u3000]/g, '');
+}
+
+/**
+ * 调用 DashScope 多模态 API 识别验证码图片内容
+ */
+export async function recognizeCaptcha(
+  imageData: string,
+  apiKey: string
+): Promise<{ success: boolean; text?: string; error?: string }> {
+  if (!apiKey?.trim()) {
+    return { success: false, error: '请先配置 API Key' };
+  }
+  if (!imageData?.trim()) {
+    return { success: false, error: '验证码图片数据为空' };
+  }
+
+  const body = JSON.stringify({
+    model: CAPTCHA_VL_MODEL,
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'image_url', image_url: { url: imageData } },
+        { type: 'text', text: '识别这张验证码图片中的字符，只返回纯字符内容，不要任何解释。' },
+      ],
+    }],
+  });
+
+  let response: Response;
+  try {
+    response = await fetch(DASHSCOPE_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body,
+    });
+  } catch {
+    return { success: false, error: '网络错误' };
+  }
+
+  if (!response.ok) {
+    if (response.status === 401) return { success: false, error: 'API Key 无效' };
+    if (response.status === 429) return { success: false, error: 'API 调用频率超限' };
+    return { success: false, error: 'AI 服务异常' };
+  }
+
+  try {
+    const data = await response.json();
+    const content = data?.choices?.[0]?.message?.content;
+    if (!content) return { success: false, error: '识别结果为空' };
+
+    const cleaned = cleanCaptchaResult(content);
+    if (!cleaned) return { success: false, error: '未能识别验证码内容' };
+
+    return { success: true, text: cleaned };
+  } catch {
+    return { success: false, error: 'AI 返回解析失败' };
+  }
+}
+
+
+// ============================================================
 // AI 驱动的页面分析 + 评论生成 + 操作规划
 // ============================================================
 
@@ -238,6 +311,18 @@ export async function analyzePageAndPlan(
     return { success: false, error: '请先在设置中配置 API Key' };
   }
 
+  // 验证码处理
+  let captchaText: string | null = null;
+  let captchaFailed = false;
+  if (snapshot.captchaInfo?.type === 'simple_image') {
+    const captchaResult = await recognizeCaptcha(snapshot.captchaInfo.imageData, apiKey);
+    if (captchaResult.success && captchaResult.text) {
+      captchaText = captchaResult.text;
+    } else {
+      captchaFailed = true;
+    }
+  }
+
   const body = JSON.stringify({
     model: MODEL,
     messages: [
@@ -284,11 +369,34 @@ export async function analyzePageAndPlan(
       hasCaptcha?: boolean;
     };
 
+    let finalActions = plan.actions;
+    let finalHasCaptcha = plan.hasCaptcha || false;
+
+    if (captchaText && snapshot.captchaInfo) {
+      // 验证码识别成功：在提交按钮点击前插入验证码填写操作
+      const captchaAction: AIAction = {
+        type: 'type' as const,
+        selector: snapshot.captchaInfo.inputSelector,
+        value: captchaText,
+      };
+      const submitIdx = finalActions.findIndex((a: AIAction) => a.type === 'click');
+      if (submitIdx >= 0) {
+        finalActions = [...finalActions.slice(0, submitIdx), captchaAction, ...finalActions.slice(submitIdx)];
+      } else {
+        finalActions = [...finalActions, captchaAction];
+      }
+      finalHasCaptcha = false;
+    } else if (captchaFailed) {
+      // 验证码识别失败：移除提交操作，标记需要手动处理
+      finalActions = finalActions.filter((a: AIAction) => a.type !== 'click');
+      finalHasCaptcha = true;
+    }
+
     return {
       success: true,
       comment: plan.comment,
-      actions: plan.actions,
-      hasCaptcha: plan.hasCaptcha || false,
+      actions: finalActions,
+      hasCaptcha: finalHasCaptcha,
     };
   } catch (e) {
     return { success: false, error: 'AI 返回格式解析失败，请重试' };

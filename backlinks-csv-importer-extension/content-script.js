@@ -5,6 +5,9 @@
   } else {
     window.__autoCommentInjected = true;
   }
+  var CAPTCHA_IMAGE_KEYWORDS = ["captcha", "verify", "verification", "seccode", "\u9A8C\u8BC1\u7801", "\u8A8D\u8A3C", "vcode"];
+  var CAPTCHA_INPUT_KEYWORDS = ["captcha", "verify", "verification", "seccode", "\u9A8C\u8BC1\u7801", "\u8A8D\u8A3C", "vcode"];
+  var COMPLEX_CAPTCHA_SELECTORS = [".g-recaptcha", '[class*="recaptcha"]', '[class*="hcaptcha"]', "[data-sitekey]"];
   function buildSelector(el, depth = 0) {
     if (depth > 5 || !el || el === document.documentElement || el === document.body) {
       return el?.tagName?.toLowerCase() || "body";
@@ -61,7 +64,125 @@
     }
     return "";
   }
-  function capturePageSnapshot() {
+  function detectSimpleCaptcha() {
+    const imgs = document.querySelectorAll("img");
+    for (const img of imgs) {
+      const isInsideComplex = COMPLEX_CAPTCHA_SELECTORS.some((sel) => {
+        try {
+          return img.closest(sel) !== null;
+        } catch {
+          return false;
+        }
+      });
+      if (isInsideComplex) continue;
+      const attrs = [
+        img.id || "",
+        img.getAttribute("name") || "",
+        img.className || "",
+        img.src || "",
+        img.alt || ""
+      ];
+      const isCaptchaImg = attrs.some(
+        (attr) => CAPTCHA_IMAGE_KEYWORDS.some((kw) => attr.toLowerCase().includes(kw))
+      );
+      if (!isCaptchaImg) continue;
+      let input = null;
+      const form = img.closest("form");
+      if (form) {
+        const textInputs = form.querySelectorAll('input[type="text"]');
+        for (const ti of textInputs) {
+          const tiAttrs = [ti.name || "", ti.id || ""];
+          const matches = tiAttrs.some(
+            (a) => CAPTCHA_INPUT_KEYWORDS.some((kw) => a.toLowerCase().includes(kw))
+          );
+          if (matches) {
+            input = ti;
+            break;
+          }
+        }
+      }
+      if (!input) {
+        const next = img.nextElementSibling;
+        if (next && next.tagName === "INPUT" && next.type === "text") {
+          input = next;
+        }
+      }
+      if (!input) {
+        const prev = img.previousElementSibling;
+        if (prev && prev.tagName === "INPUT" && prev.type === "text") {
+          input = prev;
+        }
+      }
+      if (!input && img.parentElement) {
+        input = img.parentElement.querySelector('input[type="text"]');
+      }
+      if (!input) continue;
+      return { imgElement: img, inputSelector: buildSelector(input) };
+    }
+    return null;
+  }
+  async function extractCaptchaImageData(imgElement) {
+    const src = imgElement.src || "";
+    if (src.startsWith("data:image/")) {
+      return src;
+    }
+    if (src) {
+      try {
+        const absoluteUrl = new URL(src, window.location.href).href;
+        if (absoluteUrl.startsWith("http://") || absoluteUrl.startsWith("https://")) {
+          if (imgElement.complete && imgElement.naturalWidth > 0) {
+            try {
+              const canvas = document.createElement("canvas");
+              canvas.width = imgElement.naturalWidth;
+              canvas.height = imgElement.naturalHeight;
+              const ctx = canvas.getContext("2d");
+              if (ctx) {
+                ctx.drawImage(imgElement, 0, 0);
+                return canvas.toDataURL("image/png");
+              }
+            } catch (e) {
+            }
+          }
+          return absoluteUrl;
+        }
+      } catch {
+      }
+    }
+    if (!imgElement.complete || imgElement.naturalWidth === 0) {
+      await new Promise((resolve) => {
+        const timeout = setTimeout(resolve, 3e3);
+        imgElement.onload = () => {
+          clearTimeout(timeout);
+          resolve();
+        };
+        imgElement.onerror = () => {
+          clearTimeout(timeout);
+          resolve();
+        };
+      });
+    }
+    if (imgElement.complete && imgElement.naturalWidth > 0) {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = imgElement.naturalWidth;
+        canvas.height = imgElement.naturalHeight;
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          ctx.drawImage(imgElement, 0, 0);
+          return canvas.toDataURL("image/png");
+        }
+      } catch {
+      }
+    }
+    if (src) {
+      try {
+        return new URL(src, window.location.href).href;
+      } catch {
+      }
+    }
+    return "";
+  }
+  async function capturePageSnapshot() {
     const title = document.querySelector("h1")?.textContent?.trim() || document.title.trim();
     const pageLang = document.documentElement.lang || document.querySelector('meta[http-equiv="content-language"]')?.getAttribute("content") || "";
     let bodyExcerpt = "";
@@ -166,7 +287,22 @@
       } catch {
       }
     }
-    return { title, bodyExcerpt, forms: formSnapshots, hasCaptcha, htmlAllowed, errorMessages, pageLang };
+    let captchaInfo;
+    try {
+      const detected = detectSimpleCaptcha();
+      if (detected) {
+        const imageData = await extractCaptchaImageData(detected.imgElement);
+        if (imageData) {
+          captchaInfo = {
+            imageData,
+            inputSelector: detected.inputSelector,
+            type: "simple_image"
+          };
+        }
+      }
+    } catch {
+    }
+    return { title, bodyExcerpt, forms: formSnapshots, hasCaptcha, captchaInfo, htmlAllowed, errorMessages, pageLang };
   }
   function delay(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -257,12 +393,14 @@
     chrome.runtime.onMessage.addListener(
       (message, _sender, sendResponse) => {
         if (message.action === "snapshot-page") {
-          try {
-            const snapshot = capturePageSnapshot();
-            sendResponse({ success: true, snapshot });
-          } catch (error) {
-            sendResponse({ success: false, error: `\u9875\u9762\u5FEB\u7167\u6355\u83B7\u5931\u8D25: ${error?.message || error}` });
-          }
+          (async () => {
+            try {
+              const snapshot = await capturePageSnapshot();
+              sendResponse({ success: true, snapshot });
+            } catch (error) {
+              sendResponse({ success: false, error: `\u9875\u9762\u5FEB\u7167\u6355\u83B7\u5931\u8D25: ${error?.message || error}` });
+            }
+          })();
           return true;
         }
         if (message.action === "execute-actions") {

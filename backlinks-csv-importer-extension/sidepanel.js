@@ -1131,6 +1131,7 @@
   }
 
   // src/auto-comment.ts
+  var CAPTCHA_ERROR_KEYWORDS = ["\u9A8C\u8BC1\u7801", "captcha", "\u8A8D\u8A3C\u30B3\u30FC\u30C9", "\u8A8D\u8A3C", "verification code", "wrong code", "incorrect code"];
   function updateStatus(text, type) {
     const el = document.getElementById("auto-comment-status");
     if (!el) return;
@@ -1154,6 +1155,11 @@
   async function loadApiKey() {
     const result = await chrome.storage.local.get(["dashscopeApiKey"]);
     return result.dashscopeApiKey || null;
+  }
+  function isCaptchaError(message) {
+    if (!message) return false;
+    const lower = message.toLowerCase();
+    return CAPTCHA_ERROR_KEYWORDS.some((kw) => lower.includes(kw.toLowerCase()));
   }
   async function runAutoComment() {
     const btn = document.getElementById("auto-comment-btn");
@@ -1226,6 +1232,8 @@
       let finalCaptcha = hasCaptcha;
       let retryCount = 0;
       const MAX_RETRIES = 3;
+      let captchaRetryCount = 0;
+      const MAX_CAPTCHA_RETRIES = 2;
       let lastComment = analyzeResp.comment || "";
       for (let round = 0; round < 5; round++) {
         updateStatus("\u7B49\u5F85\u9875\u9762\u54CD\u5E94...", "info");
@@ -1271,9 +1279,44 @@
           break;
         }
         if (verifyResp.status === "error") {
+          const errMsg = verifyResp.message || "\u672A\u77E5\u9519\u8BEF";
+          if (isCaptchaError(errMsg)) {
+            if (captchaRetryCount < MAX_CAPTCHA_RETRIES) {
+              captchaRetryCount++;
+              updateStatus(`\u9A8C\u8BC1\u7801\u8BC6\u522B\u9519\u8BEF\uFF0C\u6B63\u5728\u91CD\u65B0\u83B7\u53D6\u9A8C\u8BC1\u7801\u5E76\u91CD\u8BD5\uFF08${captchaRetryCount}/${MAX_CAPTCHA_RETRIES}\uFF09...`, "info");
+              const captchaSnapResp = await chrome.runtime.sendMessage({
+                action: "snapshot-page",
+                payload: { tabId }
+              });
+              if (!captchaSnapResp?.success) {
+                updateStatus("\u9A8C\u8BC1\u7801\u91CD\u8BD5\u5931\u8D25: \u65E0\u6CD5\u83B7\u53D6\u9875\u9762\u5FEB\u7167", "error");
+                return;
+              }
+              const captchaRetryAnalyze = await chrome.runtime.sendMessage({
+                action: "ai-analyze",
+                payload: { snapshot: captchaSnapResp.snapshot, template, apiKey }
+              });
+              if (!captchaRetryAnalyze?.success || !captchaRetryAnalyze.actions?.length) {
+                updateStatus("\u9A8C\u8BC1\u7801\u91CD\u8BD5\u5931\u8D25: AI \u5206\u6790\u5931\u8D25", "error");
+                return;
+              }
+              lastComment = captchaRetryAnalyze.comment || lastComment;
+              updateStatus(`\u6B63\u5728\u91CD\u65B0\u586B\u5199\u9A8C\u8BC1\u7801\u5E76\u63D0\u4EA4\uFF08\u7B2C ${captchaRetryCount} \u6B21\u91CD\u8BD5\uFF09...`, "info");
+              const captchaRetryExec = await chrome.runtime.sendMessage({
+                action: "execute-actions",
+                payload: { tabId, actions: captchaRetryAnalyze.actions }
+              });
+              if (!captchaRetryExec?.success) {
+                updateStatus("\u9A8C\u8BC1\u7801\u91CD\u8BD5\u6267\u884C\u5931\u8D25", "error");
+                return;
+              }
+              continue;
+            }
+            updateStatus("\u9A8C\u8BC1\u7801\u591A\u6B21\u8BC6\u522B\u5931\u8D25\uFF0C\u8BF7\u624B\u52A8\u5B8C\u6210\u9A8C\u8BC1\u7801\u5E76\u63D0\u4EA4", "warning");
+            return;
+          }
           if (retryCount < MAX_RETRIES) {
             retryCount++;
-            const errMsg = verifyResp.message || "\u672A\u77E5\u9519\u8BEF";
             updateStatus(`\u63D0\u4EA4\u5931\u8D25\uFF08${errMsg}\uFF09\uFF0C\u6B63\u5728\u81EA\u52A8\u4FEE\u6B63\u5E76\u91CD\u8BD5\uFF08${retryCount}/${MAX_RETRIES}\uFF09...`, "info");
             const retrySnapResp = await chrome.runtime.sendMessage({
               action: "snapshot-page",

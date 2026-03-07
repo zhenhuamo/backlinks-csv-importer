@@ -11,7 +11,16 @@ if ((window as any).__autoCommentInjected) {
   (window as any).__autoCommentInjected = true;
 }
 
-import { PageSnapshot, SnapshotElement, AIAction } from './types';
+import { PageSnapshot, SnapshotElement, AIAction, CaptchaInfo } from './types';
+
+/** 验证码图片检测关键词 */
+const CAPTCHA_IMAGE_KEYWORDS = ['captcha', 'verify', 'verification', 'seccode', '验证码', '認証', 'vcode'];
+
+/** 验证码输入框检测关键词 */
+const CAPTCHA_INPUT_KEYWORDS = ['captcha', 'verify', 'verification', 'seccode', '验证码', '認証', 'vcode'];
+
+/** 复杂验证码检测选择器（不尝试自动识别） */
+const COMPLEX_CAPTCHA_SELECTORS = ['.g-recaptcha', '[class*="recaptcha"]', '[class*="hcaptcha"]', '[data-sitekey]'];
 
 // ============================================================
 // 页面快照：捕获页面结构供 AI 理解
@@ -91,9 +100,154 @@ function findLabel(el: Element, form: Element): string {
 }
 
 /**
+ * 检测页面中的简单图片验证码
+ * 返回 { imgElement, inputSelector } 或 null
+ */
+function detectSimpleCaptcha(): { imgElement: HTMLImageElement; inputSelector: string } | null {
+  const imgs = document.querySelectorAll('img');
+
+  for (const img of imgs) {
+    // Skip images inside complex captcha containers
+    const isInsideComplex = COMPLEX_CAPTCHA_SELECTORS.some(sel => {
+      try { return img.closest(sel) !== null; } catch { return false; }
+    });
+    if (isInsideComplex) continue;
+
+    // Check if any attribute contains a captcha keyword
+    const attrs = [
+      img.id || '',
+      img.getAttribute('name') || '',
+      img.className || '',
+      img.src || '',
+      img.alt || '',
+    ];
+    const isCaptchaImg = attrs.some(attr =>
+      CAPTCHA_IMAGE_KEYWORDS.some(kw => attr.toLowerCase().includes(kw))
+    );
+    if (!isCaptchaImg) continue;
+
+    // Found a captcha image — now locate the associated text input
+    let input: HTMLInputElement | null = null;
+
+    // Strategy 1: Same <form> parent — find input with name/id matching keywords
+    const form = img.closest('form');
+    if (form) {
+      const textInputs = form.querySelectorAll<HTMLInputElement>('input[type="text"]');
+      for (const ti of textInputs) {
+        const tiAttrs = [(ti.name || ''), (ti.id || '')];
+        const matches = tiAttrs.some(a =>
+          CAPTCHA_INPUT_KEYWORDS.some(kw => a.toLowerCase().includes(kw))
+        );
+        if (matches) { input = ti; break; }
+      }
+    }
+
+    // Strategy 2: Adjacent sibling
+    if (!input) {
+      const next = img.nextElementSibling;
+      if (next && next.tagName === 'INPUT' && (next as HTMLInputElement).type === 'text') {
+        input = next as HTMLInputElement;
+      }
+    }
+    if (!input) {
+      const prev = img.previousElementSibling;
+      if (prev && prev.tagName === 'INPUT' && (prev as HTMLInputElement).type === 'text') {
+        input = prev as HTMLInputElement;
+      }
+    }
+
+    // Strategy 3: Parent element — find any text input within parent
+    if (!input && img.parentElement) {
+      input = img.parentElement.querySelector<HTMLInputElement>('input[type="text"]');
+    }
+
+    if (!input) continue;
+
+    return { imgElement: img as HTMLImageElement, inputSelector: buildSelector(input) };
+  }
+
+  return null;
+}
+
+/**
+ * 提取验证码图片数据
+ * 优先使用 src URL，跨域时回退到 Canvas base64，最终回退到截图裁剪
+ */
+async function extractCaptchaImageData(imgElement: HTMLImageElement): Promise<string> {
+  const src = imgElement.src || '';
+
+  // 1. If src is a data URI, use directly
+  if (src.startsWith('data:image/')) {
+    return src;
+  }
+
+  // 2. If src is a URL (absolute or relative), convert to absolute URL and use
+  if (src) {
+    try {
+      const absoluteUrl = new URL(src, window.location.href).href;
+      if (absoluteUrl.startsWith('http://') || absoluteUrl.startsWith('https://')) {
+        // Try Canvas approach first for better reliability with multimodal API
+        if (imgElement.complete && imgElement.naturalWidth > 0) {
+          try {
+            const canvas = document.createElement('canvas');
+            canvas.width = imgElement.naturalWidth;
+            canvas.height = imgElement.naturalHeight;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              ctx.drawImage(imgElement, 0, 0);
+              return canvas.toDataURL('image/png');
+            }
+          } catch (e) {
+            // Canvas tainted by cross-origin — fall through to URL
+          }
+        }
+        return absoluteUrl;
+      }
+    } catch {
+      // Invalid URL — continue to fallback
+    }
+  }
+
+  // 3. Wait for image to load if not complete (3 second timeout)
+  if (!imgElement.complete || imgElement.naturalWidth === 0) {
+    await new Promise<void>((resolve) => {
+      const timeout = setTimeout(resolve, 3000);
+      imgElement.onload = () => { clearTimeout(timeout); resolve(); };
+      imgElement.onerror = () => { clearTimeout(timeout); resolve(); };
+    });
+  }
+
+  // 4. Try Canvas again after waiting
+  if (imgElement.complete && imgElement.naturalWidth > 0) {
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = imgElement.naturalWidth;
+      canvas.height = imgElement.naturalHeight;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(imgElement, 0, 0);
+        return canvas.toDataURL('image/png');
+      }
+    } catch {
+      // Canvas tainted — fall through
+    }
+  }
+
+  // 5. Final fallback: return the src URL if available, otherwise empty string
+  if (src) {
+    try {
+      return new URL(src, window.location.href).href;
+    } catch { /* ignore */ }
+  }
+
+  return '';
+}
+
+
+/**
  * 捕获页面中所有表单的结构快照
  */
-export function capturePageSnapshot(): PageSnapshot {
+export async function capturePageSnapshot(): Promise<PageSnapshot> {
   const title = document.querySelector('h1')?.textContent?.trim() || document.title.trim();
 
   // 检测页面语言
@@ -207,7 +361,23 @@ export function capturePageSnapshot(): PageSnapshot {
     } catch { /* ignore */ }
   }
 
-  return { title, bodyExcerpt, forms: formSnapshots, hasCaptcha, htmlAllowed, errorMessages, pageLang };
+  // 简单图片验证码检测
+  let captchaInfo: CaptchaInfo | undefined;
+  try {
+    const detected = detectSimpleCaptcha();
+    if (detected) {
+      const imageData = await extractCaptchaImageData(detected.imgElement);
+      if (imageData) {
+        captchaInfo = {
+          imageData,
+          inputSelector: detected.inputSelector,
+          type: 'simple_image',
+        };
+      }
+    }
+  } catch { /* 安全忽略，不影响主流程 */ }
+
+  return { title, bodyExcerpt, forms: formSnapshots, hasCaptcha, captchaInfo, htmlAllowed, errorMessages, pageLang };
 }
 
 
@@ -338,12 +508,14 @@ if (!(window as any).__autoCommentListenerRegistered) {
 
       // 截取页面快照
       if (message.action === 'snapshot-page') {
-        try {
-          const snapshot = capturePageSnapshot();
-          sendResponse({ success: true, snapshot });
-        } catch (error: any) {
-          sendResponse({ success: false, error: `页面快照捕获失败: ${error?.message || error}` });
-        }
+        (async () => {
+          try {
+            const snapshot = await capturePageSnapshot();
+            sendResponse({ success: true, snapshot });
+          } catch (error: any) {
+            sendResponse({ success: false, error: `页面快照捕获失败: ${error?.message || error}` });
+          }
+        })();
         return true;
       }
 

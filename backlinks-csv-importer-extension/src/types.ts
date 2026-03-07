@@ -153,7 +153,8 @@ export type MessageAction =
   | 'auto-comment:result'
   | 'snapshot-page'
   | 'ai-analyze'
-  | 'execute-actions';
+  | 'execute-actions'
+  | 'captcha-recognize';
 
 export interface Message {
   action: MessageAction;
@@ -173,6 +174,13 @@ export interface SnapshotElement {
   value?: string;         // 当前值
 }
 
+/** 简单图片验证码信息 */
+export interface CaptchaInfo {
+  imageData: string;      // 验证码图片的 base64 data URI 或可访问的 URL
+  inputSelector: string;  // 验证码输入框的 CSS 选择器
+  type: 'simple_image';   // 验证码类型标识
+}
+
 /** 页面快照 */
 export interface PageSnapshot {
   title: string;
@@ -182,6 +190,7 @@ export interface PageSnapshot {
     elements: SnapshotElement[];
   }[];
   hasCaptcha: boolean;
+  captchaInfo?: CaptchaInfo;
   htmlAllowed: boolean;
   errorMessages?: string[];
   pageLang?: string;

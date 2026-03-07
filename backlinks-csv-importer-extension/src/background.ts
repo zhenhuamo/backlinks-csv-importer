@@ -1,7 +1,7 @@
 // Service Worker: opens the side panel when the extension icon is clicked
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 
-import { generateComment, analyzePageAndPlan, analyzePostSubmit, retryWithErrorContext } from './ai-comment-generator';
+import { generateComment, analyzePageAndPlan, analyzePostSubmit, retryWithErrorContext, recognizeCaptcha } from './ai-comment-generator';
 
 async function ensureContentScript(tabId: number): Promise<void> {
   await chrome.scripting.executeScript({
@@ -85,6 +85,28 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse(r);
       } catch (e: any) {
         sendResponse({ success: false, error: '重试失败: ' + (e?.message || e) });
+      }
+    })();
+    return true;
+  }
+
+  // 验证码识别
+  if (action === 'captcha-recognize') {
+    const { imageData, apiKey } = payload as { imageData: string; apiKey: string };
+    (async () => {
+      try {
+        if (!imageData) {
+          sendResponse({ success: false, error: '验证码图片数据缺失' });
+          return;
+        }
+        if (!apiKey) {
+          sendResponse({ success: false, error: 'API Key 缺失' });
+          return;
+        }
+        const r = await recognizeCaptcha(imageData, apiKey);
+        sendResponse(r);
+      } catch (e: any) {
+        sendResponse({ success: false, error: '验证码识别失败: ' + (e?.message || e) });
       }
     })();
     return true;
