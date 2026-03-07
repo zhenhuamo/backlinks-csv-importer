@@ -2,7 +2,11 @@
 (() => {
   // src/ai-comment-generator.ts
   var DASHSCOPE_ENDPOINT = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
-  var MODEL = "qwen-plus";
+  var DEFAULT_MODEL = "qwen3.5-flash";
+  var DEFAULT_CAPTCHA_MODEL = "qwen3.5-flash";
+  var currentModel = DEFAULT_MODEL;
+  var currentCaptchaModel = DEFAULT_CAPTCHA_MODEL;
+  var thinkingEnabled = false;
   function buildSystemPrompt(htmlAllowed) {
     const linkFormatInstruction = htmlAllowed ? '\u5728\u8BC4\u8BBA\u4E2D\u4F7F\u7528 <a href="url">\u5173\u952E\u8BCD</a> \u7684 HTML \u683C\u5F0F\u5D4C\u5165\u94FE\u63A5\u3002' : "\u5728\u8BC4\u8BBA\u4E2D\u4EE5\u7EAF\u6587\u672C\u65B9\u5F0F\u81EA\u7136\u5730\u63D0\u53CA\u7F51\u5740\u548C\u5173\u952E\u8BCD\uFF0C\u4E0D\u8981\u4F7F\u7528\u4EFB\u4F55 HTML \u6807\u7B7E\u3002";
     return [
@@ -34,11 +38,12 @@
       return { success: false, error: "\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u914D\u7F6E API Key" };
     }
     const body = JSON.stringify({
-      model: MODEL,
+      model: currentModel,
       messages: [
         { role: "system", content: buildSystemPrompt(params.htmlAllowed) },
         { role: "user", content: buildUserPrompt(params.title, params.body, params.template) }
-      ]
+      ],
+      enable_thinking: thinkingEnabled
     });
     let response;
     try {
@@ -66,7 +71,6 @@
     const content = data?.choices?.[0]?.message?.content;
     return { success: true, comment: content };
   }
-  var CAPTCHA_VL_MODEL = "qwen-vl-plus";
   function cleanCaptchaResult(raw) {
     return raw.replace(/[\s\.,;:!?'"，。；：！？、\-\(\)\[\]{}\u3000]/g, "");
   }
@@ -78,14 +82,15 @@
       return { success: false, error: "\u9A8C\u8BC1\u7801\u56FE\u7247\u6570\u636E\u4E3A\u7A7A" };
     }
     const body = JSON.stringify({
-      model: CAPTCHA_VL_MODEL,
+      model: currentCaptchaModel,
       messages: [{
         role: "user",
         content: [
           { type: "image_url", image_url: { url: imageData } },
           { type: "text", text: "\u8BC6\u522B\u8FD9\u5F20\u9A8C\u8BC1\u7801\u56FE\u7247\u4E2D\u7684\u5B57\u7B26\uFF0C\u53EA\u8FD4\u56DE\u7EAF\u5B57\u7B26\u5185\u5BB9\uFF0C\u4E0D\u8981\u4EFB\u4F55\u89E3\u91CA\u3002" }
         ]
-      }]
+      }],
+      enable_thinking: thinkingEnabled
     });
     let response;
     try {
@@ -182,12 +187,18 @@
 - \u53EA\u586B\u5199\u4F60\u80FD\u786E\u5B9A\u7528\u9014\u7684\u5B57\u6BB5\uFF0C\u4E0D\u786E\u5B9A\u7684\u5B57\u6BB5\u8DF3\u8FC7\uFF08\u5982"\u524A\u9664\u30AD\u30FC"\u7B49\uFF09
 - selector \u5FC5\u987B\u4F7F\u7528\u5FEB\u7167\u4E2D\u63D0\u4F9B\u7684 selector \u503C\uFF0C\u4E0D\u8981\u81EA\u5DF1\u7F16\u9020
 
-\u5173\u4E8E URL/\u94FE\u63A5\u7684\u91CD\u8981\u89C4\u5219\uFF1A
-- \u5982\u679C\u8868\u5355\u6709\u4E13\u95E8\u7684 URL/\u7F51\u5740\u5B57\u6BB5\uFF08\u5982 name="url" \u6216 label \u5305\u542B "URL"\u3001"\u7F51\u5740"\u3001"\u30DB\u30FC\u30E0\u30DA\u30FC\u30B8"\uFF09\uFF0C\u628A\u7F51\u5740\u586B\u5728\u90A3\u4E2A\u5B57\u6BB5\u91CC
-- \u3010\u4E25\u7981\u3011\u5728\u8BC4\u8BBA\u6B63\u6587\uFF08textarea/\u30B3\u30E1\u30F3\u30C8\u5B57\u6BB5\uFF09\u4E2D\u5305\u542B\u4EFB\u4F55 URL\u3001\u7F51\u5740\u3001\u94FE\u63A5\uFF01\u7EDD\u5BF9\u4E0D\u8981\u5728\u8BC4\u8BBA\u5185\u5BB9\u4E2D\u5199 http://\u3001https://\u3001www. \u6216\u4EFB\u4F55\u57DF\u540D\uFF01
-- \u8BC4\u8BBA\u6B63\u6587\u4E2D\u53EA\u5199\u7EAF\u6587\u5B57\u8BC4\u8BBA\uFF0C\u81EA\u7136\u5730\u63D0\u53CA\u5173\u952E\u8BCD\u548C\u7F51\u7AD9\u540D\u79F0\u5373\u53EF
-- \u7F51\u5740\u53EA\u80FD\u586B\u5728\u4E13\u95E8\u7684 URL \u5B57\u6BB5\u4E2D\uFF0C\u7EDD\u4E0D\u80FD\u51FA\u73B0\u5728\u8BC4\u8BBA\u6B63\u6587\u4E2D
-- \u5F88\u591A\u7F51\u7AD9\u4F1A\u628A URL \u4E2D\u7684\u5B57\u7B26\uFF08\u5982 w\u3001r\u3001http \u7B49\uFF09\u5F53\u4F5C\u7981\u6B62\u8BCD\uFF0C\u6240\u4EE5\u8BC4\u8BBA\u6B63\u6587\u5FC5\u987B\u662F\u7EAF\u6587\u5B57
+\u5173\u4E8E URL/\u94FE\u63A5\u7684\u91CD\u8981\u89C4\u5219\uFF08\u6839\u636E\u8868\u5355\u7ED3\u6784\u7075\u6D3B\u5904\u7406\uFF09\uFF1A
+- \u3010\u60C5\u51B5A\uFF1A\u8868\u5355\u6709\u4E13\u95E8\u7684 URL/\u7F51\u5740\u5B57\u6BB5\u3011\u5982\u679C\u8868\u5355\u4E2D\u6709 name="url" \u6216 label \u5305\u542B "URL"\u3001"\u7F51\u5740"\u3001"\u30DB\u30FC\u30E0\u30DA\u30FC\u30B8"\u3001"Website" \u7684\u8F93\u5165\u6846\uFF1A
+  - \u628A\u7F51\u5740\u586B\u5728\u90A3\u4E2A\u4E13\u95E8\u7684 URL \u5B57\u6BB5\u91CC
+  - \u8BC4\u8BBA\u6B63\u6587\u4E2D\u3010\u4E25\u7981\u3011\u5305\u542B\u4EFB\u4F55 URL\u3001\u7F51\u5740\u3001\u94FE\u63A5\uFF08http://\u3001https://\u3001www. \u6216\u57DF\u540D\uFF09
+  - \u8BC4\u8BBA\u6B63\u6587\u53EA\u5199\u7EAF\u6587\u5B57\uFF0C\u81EA\u7136\u63D0\u53CA\u5173\u952E\u8BCD\u548C\u7F51\u7AD9\u540D\u79F0\u5373\u53EF
+  - \u5F88\u591A\u7F51\u7AD9\u4F1A\u628A URL \u4E2D\u7684\u5B57\u7B26\u5F53\u4F5C\u7981\u6B62\u8BCD\uFF0C\u6240\u4EE5\u8BC4\u8BBA\u6B63\u6587\u5FC5\u987B\u662F\u7EAF\u6587\u5B57
+- \u3010\u60C5\u51B5B\uFF1A\u8868\u5355\u6CA1\u6709 URL/\u7F51\u5740\u5B57\u6BB5\u3011\u5982\u679C\u8868\u5355\u4E2D\u6CA1\u6709\u4E13\u95E8\u7684 URL \u5B57\u6BB5\uFF08\u53EA\u6709 Name\u3001Subject\u3001Message/Comment \u7B49\uFF09\uFF1A
+  - \u5FC5\u987B\u5728\u8BC4\u8BBA\u6B63\u6587\u4E2D\u5D4C\u5165\u94FE\u63A5\uFF0C\u5426\u5219\u5916\u94FE\u5C31\u4E22\u5931\u4E86
+  - \u5982\u679C\u3010\u5141\u8BB8HTML\u3011\u4E3A"\u662F"\uFF0C\u4F7F\u7528 <a href="\u7F51\u5740">\u5173\u952E\u8BCD</a> \u683C\u5F0F\u5D4C\u5165\u94FE\u63A5
+  - \u5982\u679C\u3010\u5141\u8BB8HTML\u3011\u4E3A"\u5426"\u6216\u4E0D\u786E\u5B9A\uFF0C\u4E5F\u5C1D\u8BD5\u4F7F\u7528 <a href="\u7F51\u5740">\u5173\u952E\u8BCD</a> \u683C\u5F0F\uFF08\u5F88\u591A\u8BBA\u575B/\u7559\u8A00\u677F\u5B9E\u9645\u652F\u6301 HTML \u4F46\u9875\u9762\u4E0A\u6CA1\u6709\u660E\u786E\u63D0\u793A\uFF09
+  - \u94FE\u63A5\u8981\u81EA\u7136\u878D\u5165\u8BC4\u8BBA\u5185\u5BB9\u4E2D\uFF0C\u4E0D\u8981\u751F\u786C
+  - \u4F8B\u5982\uFF1A"\u8FD9\u7BC7\u6587\u7AE0\u5F88\u6709\u542F\u53D1\uFF0C\u63A8\u8350\u5927\u5BB6\u4E5F\u770B\u770B <a href="https://example.com">\u76F8\u5173\u8D44\u6E90</a>\uFF0C\u5185\u5BB9\u5F88\u4E0D\u9519\u3002"
 
 \u5173\u4E8E\u8BC4\u8BBA\u8BED\u8A00\u7684\u91CD\u8981\u89C4\u5219\uFF1A
 - \u6839\u636E\u9875\u9762\u8BED\u8A00\uFF08\u3010\u9875\u9762\u8BED\u8A00\u3011\u5B57\u6BB5\uFF09\u6765\u51B3\u5B9A\u8BC4\u8BBA\u4F7F\u7528\u7684\u8BED\u8A00
@@ -204,7 +215,24 @@
 - \u53EA\u6709\u8BC4\u8BBA\u6B63\u6587\uFF08textarea/\u30B3\u30E1\u30F3\u30C8\uFF09\u9700\u8981\u4E25\u683C\u9075\u5B88\u8BED\u8A00\u89C4\u5219\uFF0C\u7EDD\u5BF9\u4E0D\u80FD\u6709\u82F1\u6587\u5B57\u6BCD`;
   }
   function buildAnalyzeUserPrompt(snapshot, template, htmlAllowed) {
-    const linkInstruction = htmlAllowed ? '\u8BC4\u8BBA\u4E2D\u8BF7\u4F7F\u7528 <a href="url">\u5173\u952E\u8BCD</a> \u683C\u5F0F\u5D4C\u5165\u94FE\u63A5\u3002' : "\u8BC4\u8BBA\u4E2D\u4EE5\u7EAF\u6587\u672C\u65B9\u5F0F\u81EA\u7136\u63D0\u53CA\u7F51\u5740\u548C\u5173\u952E\u8BCD\uFF0C\u4E0D\u8981\u4F7F\u7528 HTML \u6807\u7B7E\u3002";
+    const hasUrlField = snapshot.forms.some(
+      (form) => form.elements.some(
+        (el) => el.name?.toLowerCase().includes("url") || el.label?.toLowerCase().includes("url") || el.label?.includes("\u30DB\u30FC\u30E0\u30DA\u30FC\u30B8") || el.label?.toLowerCase().includes("website") || el.label?.includes("\u7F51\u5740")
+      )
+    );
+    let linkInstruction;
+    if (hasUrlField) {
+      linkInstruction = "\u3010\u94FE\u63A5\u5904\u7406\u3011\u8868\u5355\u6709\u4E13\u95E8\u7684 URL \u5B57\u6BB5\uFF0C\u8BF7\u628A\u7F51\u5740\u586B\u5728 URL \u5B57\u6BB5\u4E2D\uFF0C\u8BC4\u8BBA\u6B63\u6587\u4E2D\u4E0D\u8981\u5305\u542B\u4EFB\u4F55\u94FE\u63A5\u6216\u7F51\u5740\u3002";
+    } else {
+      linkInstruction = [
+        "\u3010\u26A0\uFE0F \u94FE\u63A5\u5904\u7406 \u2014 \u6781\u5176\u91CD\u8981\uFF0C\u5FC5\u987B\u9075\u5B88\u3011",
+        "\u6B64\u8868\u5355\u6CA1\u6709 URL \u5B57\u6BB5\uFF01\u5982\u679C\u4E0D\u5728\u8BC4\u8BBA\u6B63\u6587\u4E2D\u5D4C\u5165\u94FE\u63A5\uFF0C\u5916\u94FE\u5C31\u4F1A\u5B8C\u5168\u4E22\u5931\uFF0C\u8FD9\u6B21\u8BC4\u8BBA\u5C31\u767D\u8D39\u4E86\u3002",
+        `\u4F60\u5FC5\u987B\u5728\u8BC4\u8BBA\u6B63\u6587\uFF08Message/Comment\uFF09\u4E2D\u5305\u542B\u8FD9\u4E2A\u94FE\u63A5\uFF1A<a href="${template.url}">${template.keyword}</a>`,
+        "\u628A\u8FD9\u4E2A <a> \u6807\u7B7E\u81EA\u7136\u5730\u878D\u5165\u8BC4\u8BBA\u53E5\u5B50\u4E2D\uFF0C\u4F8B\u5982\uFF1A",
+        `"...\u63A8\u8350\u5927\u5BB6\u770B\u770B <a href="${template.url}">${template.keyword}</a>\uFF0C\u5185\u5BB9\u5F88\u4E0D\u9519..."`,
+        "\u5982\u679C\u4E0D\u5305\u542B\u8FD9\u4E2A\u94FE\u63A5\uFF0C\u4EFB\u52A1\u5C31\u5931\u8D25\u4E86\u3002"
+      ].join("\n");
+    }
     return [
       "\u3010\u9875\u9762\u8868\u5355\u7ED3\u6784\u3011",
       snapshotToText(snapshot),
@@ -213,6 +241,7 @@
       "",
       "\u3010\u5916\u94FE\u6A21\u677F\u4FE1\u606F\uFF08\u7528\u4E8E\u586B\u5199\u8868\u5355\u5B57\u6BB5\u548C\u751F\u6210\u8BC4\u8BBA\uFF09\u3011",
       `- \u540D\u79F0/\u6635\u79F0: ${template.name}`,
+      `- \u90AE\u7BB1: ${template.email || "\uFF08\u672A\u63D0\u4F9B\uFF0C\u8BF7\u7528\u5408\u7406\u7684\u90AE\u7BB1\u5982 name@domain.com\uFF09"}`,
       `- \u7F51\u5740: ${template.url}`,
       `- \u5173\u952E\u8BCD: ${template.keyword}`,
       "",
@@ -236,12 +265,13 @@
       }
     }
     const body = JSON.stringify({
-      model: MODEL,
+      model: currentModel,
       messages: [
         { role: "system", content: buildAnalyzeSystemPrompt() },
         { role: "user", content: buildAnalyzeUserPrompt(snapshot, template, snapshot.htmlAllowed) }
       ],
-      response_format: { type: "json_object" }
+      response_format: { type: "json_object" },
+      enable_thinking: thinkingEnabled
     });
     let response;
     try {
@@ -353,12 +383,13 @@
     userPromptParts.push("", "\u8BF7\u5224\u65AD\u5F53\u524D\u9875\u9762\u72B6\u6001\u5E76\u8FD4\u56DE JSON\u3002");
     const userPrompt = userPromptParts.join("\n");
     const body = JSON.stringify({
-      model: MODEL,
+      model: currentModel,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt }
       ],
-      response_format: { type: "json_object" }
+      response_format: { type: "json_object" },
+      enable_thinking: thinkingEnabled
     });
     let response;
     try {
@@ -415,18 +446,22 @@
       "",
       "\u3010\u5916\u94FE\u6A21\u677F\u4FE1\u606F\u3011",
       `- \u540D\u79F0/\u6635\u79F0: ${template.name}`,
+      `- \u90AE\u7BB1: ${template.email || "\uFF08\u672A\u63D0\u4F9B\uFF09"}`,
       `- \u7F51\u5740: ${template.url}`,
       `- \u5173\u952E\u8BCD: ${template.keyword}`,
       "",
-      "\u8BF7\u91CD\u65B0\u751F\u6210\u8BC4\u8BBA\u5E76\u8FD4\u56DE\u64CD\u4F5C\u6307\u4EE4 JSON\u3002\u8BC4\u8BBA\u6B63\u6587\u4E2D\u7EDD\u5BF9\u4E0D\u8981\u5305\u542B\u4EFB\u4F55\u82F1\u6587\u5B57\u6BCD\u548C URL\u3002"
+      "\u8BF7\u91CD\u65B0\u751F\u6210\u8BC4\u8BBA\u5E76\u8FD4\u56DE\u64CD\u4F5C\u6307\u4EE4 JSON\u3002",
+      "\u6CE8\u610F\uFF1A\u5982\u679C\u9875\u9762\u662F\u65E5\u6587\u7F51\u7AD9\uFF0C\u8BC4\u8BBA\u6B63\u6587\u4E2D\u7EDD\u5BF9\u4E0D\u8981\u5305\u542B\u4EFB\u4F55\u82F1\u6587\u5B57\u6BCD\u3002",
+      `\u5173\u4E8E\u94FE\u63A5\uFF1A\u8BF7\u6839\u636E\u8868\u5355\u7ED3\u6784\u5224\u65AD\u2014\u2014\u5982\u679C\u6709 URL \u5B57\u6BB5\u5219\u8BC4\u8BBA\u6B63\u6587\u4E0D\u8981\u5305\u542B\u94FE\u63A5\uFF1B\u5982\u679C\u6CA1\u6709 URL \u5B57\u6BB5\uFF0C\u5219\u5FC5\u987B\u5728\u8BC4\u8BBA\u6B63\u6587\u4E2D\u7528 <a href="${template.url}">${template.keyword}</a> \u5D4C\u5165\u94FE\u63A5\uFF0C\u5426\u5219\u5916\u94FE\u4E22\u5931\u3001\u4EFB\u52A1\u5931\u8D25\u3002`
     ].join("\n");
     const body = JSON.stringify({
-      model: MODEL,
+      model: currentModel,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt }
       ],
-      response_format: { type: "json_object" }
+      response_format: { type: "json_object" },
+      enable_thinking: thinkingEnabled
     });
     let response;
     try {

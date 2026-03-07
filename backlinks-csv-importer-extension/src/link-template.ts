@@ -111,6 +111,7 @@ function renderDetail(): void {
 
   const fields: Array<{ label: string; value: string }> = [
     { label: '名称:', value: tpl.name },
+    { label: '邮箱:', value: tpl.email || '（未设置）' },
     { label: '网址:', value: tpl.url },
     { label: '关键词:', value: tpl.keyword },
   ];
@@ -149,17 +150,20 @@ function showForm(template?: LinkTemplate): void {
   const nameInput = $('template-name') as HTMLInputElement;
   const urlInput = $('template-url') as HTMLInputElement;
   const keywordInput = $('template-keyword') as HTMLInputElement;
+  const emailInput = $('template-email') as HTMLInputElement;
 
   if (template) {
     editingId = template.id;
     nameInput.value = template.name;
     urlInput.value = template.url;
     keywordInput.value = template.keyword;
+    emailInput.value = template.email || '';
   } else {
     editingId = null;
     nameInput.value = '';
     urlInput.value = '';
     keywordInput.value = '';
+    emailInput.value = '';
   }
 
   form.hidden = false;
@@ -173,6 +177,7 @@ function hideForm(): void {
   ($('template-name') as HTMLInputElement).value = '';
   ($('template-url') as HTMLInputElement).value = '';
   ($('template-keyword') as HTMLInputElement).value = '';
+  ($('template-email') as HTMLInputElement).value = '';
   editingId = null;
   $('template-form').hidden = true;
 }
@@ -184,6 +189,7 @@ async function handleSave(): Promise<void> {
   const name = ($('template-name') as HTMLInputElement).value.trim();
   const url = ($('template-url') as HTMLInputElement).value.trim();
   const keyword = ($('template-keyword') as HTMLInputElement).value.trim();
+  const email = ($('template-email') as HTMLInputElement).value.trim();
 
   if (!name) {
     alert('名称不能为空');
@@ -193,12 +199,12 @@ async function handleSave(): Promise<void> {
   if (editingId) {
     const idx = templates.findIndex(t => t.id === editingId);
     if (idx !== -1) {
-      templates[idx] = { ...templates[idx], name, url, keyword };
+      templates[idx] = { ...templates[idx], name, url, keyword, email: email || undefined };
       selectedId = editingId;
     }
   } else {
     const newId = generateId();
-    templates.push({ id: newId, name, url, keyword });
+    templates.push({ id: newId, name, url, keyword, email: email || undefined });
     selectedId = newId;
   }
 

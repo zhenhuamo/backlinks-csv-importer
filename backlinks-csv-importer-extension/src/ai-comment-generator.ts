@@ -1,7 +1,35 @@
-import { LinkTemplate, GenerateCommentParams, GenerateCommentResult, PageSnapshot, AIAction, AIAnalyzeResult } from './types';
+import { LinkTemplate, GenerateCommentParams, GenerateCommentResult, PageSnapshot, AIAction, AIAnalyzeResult, SnapshotElement } from './types';
 
 export const DASHSCOPE_ENDPOINT = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
-export const MODEL = 'qwen-plus';
+export const DEFAULT_MODEL = 'qwen3.5-flash';
+export const DEFAULT_CAPTCHA_MODEL = 'qwen3.5-flash';
+
+/** 可选的文本生成模型列表 */
+export const AVAILABLE_MODELS = [
+  { id: 'qwen3.5-flash', name: 'Qwen3.5-Flash（推荐，快速+多模态）' },
+  { id: 'qwen3.5-plus', name: 'Qwen3.5-Plus（最聪明，较慢）' },
+  { id: 'qwen-plus', name: 'Qwen-Plus（旧版均衡）' },
+  { id: 'qwen3-max', name: 'Qwen3-Max（最强，较贵）' },
+] as const;
+
+/** 可选的视觉模型列表（验证码识别） */
+export const AVAILABLE_VL_MODELS = [
+  { id: 'qwen3.5-flash', name: 'Qwen3.5-Flash（推荐，快速+多模态）' },
+  { id: 'qwen3.5-plus', name: 'Qwen3.5-Plus（更强，较慢）' },
+  { id: 'qwen-vl-plus', name: 'Qwen-VL-Plus（旧版视觉模型）' },
+] as const;
+
+/** 运行时使用的模型，可通过 setModel 修改 */
+let currentModel = DEFAULT_MODEL;
+let currentCaptchaModel = DEFAULT_CAPTCHA_MODEL;
+let thinkingEnabled = false;
+
+export function setModel(model: string): void { currentModel = model; }
+export function setCaptchaModel(model: string): void { currentCaptchaModel = model; }
+export function getModel(): string { return currentModel; }
+export function getCaptchaModel(): string { return currentCaptchaModel; }
+export function setThinkingEnabled(enabled: boolean): void { thinkingEnabled = enabled; }
+export function getThinkingEnabled(): boolean { return thinkingEnabled; }
 
 /**
  * 构建 system prompt
@@ -58,11 +86,12 @@ export async function generateComment(
   }
 
   const body = JSON.stringify({
-    model: MODEL,
+    model: currentModel,
     messages: [
       { role: 'system', content: buildSystemPrompt(params.htmlAllowed) },
       { role: 'user', content: buildUserPrompt(params.title, params.body, params.template) },
     ],
+    enable_thinking: thinkingEnabled,
   });
 
   let response: Response;
@@ -99,8 +128,6 @@ export async function generateComment(
 // 验证码识别：调用多模态 AI 识别简单图片验证码
 // ============================================================
 
-const CAPTCHA_VL_MODEL = 'qwen-vl-plus';
-
 /**
  * 清洗验证码识别结果：去除空格、标点等非验证码字符
  */
@@ -123,7 +150,7 @@ export async function recognizeCaptcha(
   }
 
   const body = JSON.stringify({
-    model: CAPTCHA_VL_MODEL,
+    model: currentCaptchaModel,
     messages: [{
       role: 'user',
       content: [
@@ -131,6 +158,7 @@ export async function recognizeCaptcha(
         { type: 'text', text: '识别这张验证码图片中的字符，只返回纯字符内容，不要任何解释。' },
       ],
     }],
+    enable_thinking: thinkingEnabled,
   });
 
   let response: Response;
@@ -247,12 +275,18 @@ function buildAnalyzeSystemPrompt(): string {
 - 只填写你能确定用途的字段，不确定的字段跳过（如"削除キー"等）
 - selector 必须使用快照中提供的 selector 值，不要自己编造
 
-关于 URL/链接的重要规则：
-- 如果表单有专门的 URL/网址字段（如 name="url" 或 label 包含 "URL"、"网址"、"ホームページ"），把网址填在那个字段里
-- 【严禁】在评论正文（textarea/コメント字段）中包含任何 URL、网址、链接！绝对不要在评论内容中写 http://、https://、www. 或任何域名！
-- 评论正文中只写纯文字评论，自然地提及关键词和网站名称即可
-- 网址只能填在专门的 URL 字段中，绝不能出现在评论正文中
-- 很多网站会把 URL 中的字符（如 w、r、http 等）当作禁止词，所以评论正文必须是纯文字
+关于 URL/链接的重要规则（根据表单结构灵活处理）：
+- 【情况A：表单有专门的 URL/网址字段】如果表单中有 name="url" 或 label 包含 "URL"、"网址"、"ホームページ"、"Website" 的输入框：
+  - 把网址填在那个专门的 URL 字段里
+  - 评论正文中【严禁】包含任何 URL、网址、链接（http://、https://、www. 或域名）
+  - 评论正文只写纯文字，自然提及关键词和网站名称即可
+  - 很多网站会把 URL 中的字符当作禁止词，所以评论正文必须是纯文字
+- 【情况B：表单没有 URL/网址字段】如果表单中没有专门的 URL 字段（只有 Name、Subject、Message/Comment 等）：
+  - 必须在评论正文中嵌入链接，否则外链就丢失了
+  - 如果【允许HTML】为"是"，使用 <a href="网址">关键词</a> 格式嵌入链接
+  - 如果【允许HTML】为"否"或不确定，也尝试使用 <a href="网址">关键词</a> 格式（很多论坛/留言板实际支持 HTML 但页面上没有明确提示）
+  - 链接要自然融入评论内容中，不要生硬
+  - 例如："这篇文章很有启发，推荐大家也看看 <a href="https://example.com">相关资源</a>，内容很不错。"
 
 关于评论语言的重要规则：
 - 根据页面语言（【页面语言】字段）来决定评论使用的语言
@@ -277,9 +311,31 @@ function buildAnalyzeUserPrompt(
   template: LinkTemplate,
   htmlAllowed: boolean
 ): string {
-  const linkInstruction = htmlAllowed
-    ? '评论中请使用 <a href="url">关键词</a> 格式嵌入链接。'
-    : '评论中以纯文本方式自然提及网址和关键词，不要使用 HTML 标签。';
+  // 检查表单是否有专门的 URL 字段
+  const hasUrlField = snapshot.forms.some((form) =>
+    form.elements.some(
+      (el: SnapshotElement) =>
+        el.name?.toLowerCase().includes('url') ||
+        el.label?.toLowerCase().includes('url') ||
+        el.label?.includes('ホームページ') ||
+        el.label?.toLowerCase().includes('website') ||
+        el.label?.includes('网址')
+    )
+  );
+
+  let linkInstruction: string;
+  if (hasUrlField) {
+    linkInstruction = '【链接处理】表单有专门的 URL 字段，请把网址填在 URL 字段中，评论正文中不要包含任何链接或网址。';
+  } else {
+    linkInstruction = [
+      '【⚠️ 链接处理 — 极其重要，必须遵守】',
+      '此表单没有 URL 字段！如果不在评论正文中嵌入链接，外链就会完全丢失，这次评论就白费了。',
+      `你必须在评论正文（Message/Comment）中包含这个链接：<a href="${template.url}">${template.keyword}</a>`,
+      '把这个 <a> 标签自然地融入评论句子中，例如：',
+      `"...推荐大家看看 <a href="${template.url}">${template.keyword}</a>，内容很不错..."`,
+      '如果不包含这个链接，任务就失败了。',
+    ].join('\n');
+  }
 
   return [
     '【页面表单结构】',
@@ -289,6 +345,7 @@ function buildAnalyzeUserPrompt(
     '',
     '【外链模板信息（用于填写表单字段和生成评论）】',
     `- 名称/昵称: ${template.name}`,
+    `- 邮箱: ${template.email || '（未提供，请用合理的邮箱如 name@domain.com）'}`,
     `- 网址: ${template.url}`,
     `- 关键词: ${template.keyword}`,
     '',
@@ -324,12 +381,13 @@ export async function analyzePageAndPlan(
   }
 
   const body = JSON.stringify({
-    model: MODEL,
+    model: currentModel,
     messages: [
       { role: 'system', content: buildAnalyzeSystemPrompt() },
       { role: 'user', content: buildAnalyzeUserPrompt(snapshot, template, snapshot.htmlAllowed) },
     ],
     response_format: { type: 'json_object' },
+    enable_thinking: thinkingEnabled,
   });
 
   let response: Response;
@@ -482,12 +540,13 @@ export async function analyzePostSubmit(
   const userPrompt = userPromptParts.join('\n');
 
   const body = JSON.stringify({
-    model: MODEL,
+    model: currentModel,
     messages: [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt },
     ],
     response_format: { type: 'json_object' },
+    enable_thinking: thinkingEnabled,
   });
 
   let response: Response;
@@ -568,19 +627,23 @@ export async function retryWithErrorContext(
     '',
     '【外链模板信息】',
     `- 名称/昵称: ${template.name}`,
+    `- 邮箱: ${template.email || '（未提供）'}`,
     `- 网址: ${template.url}`,
     `- 关键词: ${template.keyword}`,
     '',
-    '请重新生成评论并返回操作指令 JSON。评论正文中绝对不要包含任何英文字母和 URL。',
+    '请重新生成评论并返回操作指令 JSON。',
+    '注意：如果页面是日文网站，评论正文中绝对不要包含任何英文字母。',
+    `关于链接：请根据表单结构判断——如果有 URL 字段则评论正文不要包含链接；如果没有 URL 字段，则必须在评论正文中用 <a href="${template.url}">${template.keyword}</a> 嵌入链接，否则外链丢失、任务失败。`,
   ].join('\n');
 
   const body = JSON.stringify({
-    model: MODEL,
+    model: currentModel,
     messages: [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt },
     ],
     response_format: { type: 'json_object' },
+    enable_thinking: thinkingEnabled,
   });
 
   let response: Response;

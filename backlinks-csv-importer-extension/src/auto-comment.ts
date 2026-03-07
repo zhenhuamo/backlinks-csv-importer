@@ -1,4 +1,5 @@
 import { LinkTemplate } from './types';
+import { setModel, setCaptchaModel, setThinkingEnabled, DEFAULT_MODEL, DEFAULT_CAPTCHA_MODEL } from './ai-comment-generator';
 
 /** 验证码错误关键词（用于重试判断） */
 const CAPTCHA_ERROR_KEYWORDS = ['验证码', 'captcha', '認証コード', '認証', 'verification code', 'wrong code', 'incorrect code'];
@@ -44,6 +45,16 @@ export async function loadApiKey(): Promise<string | null> {
 }
 
 /**
+ * 从 chrome.storage.local 加载模型设置并应用
+ */
+export async function loadModelSettings(): Promise<void> {
+  const result = await chrome.storage.local.get(['selectedModel', 'selectedCaptchaModel', 'thinkingEnabled']);
+  setModel(result.selectedModel || DEFAULT_MODEL);
+  setCaptchaModel(result.selectedCaptchaModel || DEFAULT_CAPTCHA_MODEL);
+  setThinkingEnabled(result.thinkingEnabled || false);
+}
+
+/**
  * 判断错误信息是否为验证码相关错误
  */
 function isCaptchaError(message: string): boolean {
@@ -75,6 +86,9 @@ async function runAutoComment(): Promise<void> {
       updateStatus('请先在设置中配置 API Key', 'error');
       return;
     }
+
+    // 加载用户选择的模型设置
+    await loadModelSettings();
 
     btn.disabled = true;
 

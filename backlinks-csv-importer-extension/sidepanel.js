@@ -1037,6 +1037,7 @@
     deleteBtn.hidden = false;
     const fields = [
       { label: "\u540D\u79F0:", value: tpl.name },
+      { label: "\u90AE\u7BB1:", value: tpl.email || "\uFF08\u672A\u8BBE\u7F6E\uFF09" },
       { label: "\u7F51\u5740:", value: tpl.url },
       { label: "\u5173\u952E\u8BCD:", value: tpl.keyword }
     ];
@@ -1066,16 +1067,19 @@
     const nameInput = $("template-name");
     const urlInput = $("template-url");
     const keywordInput = $("template-keyword");
+    const emailInput = $("template-email");
     if (template) {
       editingId = template.id;
       nameInput.value = template.name;
       urlInput.value = template.url;
       keywordInput.value = template.keyword;
+      emailInput.value = template.email || "";
     } else {
       editingId = null;
       nameInput.value = "";
       urlInput.value = "";
       keywordInput.value = "";
+      emailInput.value = "";
     }
     form.hidden = false;
     nameInput.focus();
@@ -1084,6 +1088,7 @@
     $("template-name").value = "";
     $("template-url").value = "";
     $("template-keyword").value = "";
+    $("template-email").value = "";
     editingId = null;
     $("template-form").hidden = true;
   }
@@ -1091,6 +1096,7 @@
     const name = $("template-name").value.trim();
     const url = $("template-url").value.trim();
     const keyword = $("template-keyword").value.trim();
+    const email = $("template-email").value.trim();
     if (!name) {
       alert("\u540D\u79F0\u4E0D\u80FD\u4E3A\u7A7A");
       return;
@@ -1098,12 +1104,12 @@
     if (editingId) {
       const idx = templates.findIndex((t) => t.id === editingId);
       if (idx !== -1) {
-        templates[idx] = { ...templates[idx], name, url, keyword };
+        templates[idx] = { ...templates[idx], name, url, keyword, email: email || void 0 };
         selectedId = editingId;
       }
     } else {
       const newId = generateId();
-      templates.push({ id: newId, name, url, keyword });
+      templates.push({ id: newId, name, url, keyword, email: email || void 0 });
       selectedId = newId;
     }
     await saveTemplates(templates);
@@ -1128,6 +1134,33 @@
     } catch (error) {
       console.error("\u590D\u5236\u5931\u8D25", error);
     }
+  }
+
+  // src/ai-comment-generator.ts
+  var DEFAULT_MODEL = "qwen3.5-flash";
+  var DEFAULT_CAPTCHA_MODEL = "qwen3.5-flash";
+  var AVAILABLE_MODELS = [
+    { id: "qwen3.5-flash", name: "Qwen3.5-Flash\uFF08\u63A8\u8350\uFF0C\u5FEB\u901F+\u591A\u6A21\u6001\uFF09" },
+    { id: "qwen3.5-plus", name: "Qwen3.5-Plus\uFF08\u6700\u806A\u660E\uFF0C\u8F83\u6162\uFF09" },
+    { id: "qwen-plus", name: "Qwen-Plus\uFF08\u65E7\u7248\u5747\u8861\uFF09" },
+    { id: "qwen3-max", name: "Qwen3-Max\uFF08\u6700\u5F3A\uFF0C\u8F83\u8D35\uFF09" }
+  ];
+  var AVAILABLE_VL_MODELS = [
+    { id: "qwen3.5-flash", name: "Qwen3.5-Flash\uFF08\u63A8\u8350\uFF0C\u5FEB\u901F+\u591A\u6A21\u6001\uFF09" },
+    { id: "qwen3.5-plus", name: "Qwen3.5-Plus\uFF08\u66F4\u5F3A\uFF0C\u8F83\u6162\uFF09" },
+    { id: "qwen-vl-plus", name: "Qwen-VL-Plus\uFF08\u65E7\u7248\u89C6\u89C9\u6A21\u578B\uFF09" }
+  ];
+  var currentModel = DEFAULT_MODEL;
+  var currentCaptchaModel = DEFAULT_CAPTCHA_MODEL;
+  var thinkingEnabled = false;
+  function setModel(model) {
+    currentModel = model;
+  }
+  function setCaptchaModel(model) {
+    currentCaptchaModel = model;
+  }
+  function setThinkingEnabled(enabled) {
+    thinkingEnabled = enabled;
   }
 
   // src/auto-comment.ts
@@ -1156,6 +1189,12 @@
     const result = await chrome.storage.local.get(["dashscopeApiKey"]);
     return result.dashscopeApiKey || null;
   }
+  async function loadModelSettings() {
+    const result = await chrome.storage.local.get(["selectedModel", "selectedCaptchaModel", "thinkingEnabled"]);
+    setModel(result.selectedModel || DEFAULT_MODEL);
+    setCaptchaModel(result.selectedCaptchaModel || DEFAULT_CAPTCHA_MODEL);
+    setThinkingEnabled(result.thinkingEnabled || false);
+  }
   function isCaptchaError(message) {
     if (!message) return false;
     const lower = message.toLowerCase();
@@ -1174,6 +1213,7 @@
         updateStatus("\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u914D\u7F6E API Key", "error");
         return;
       }
+      await loadModelSettings();
       btn.disabled = true;
       const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
       const tabId = tabs[0]?.id;
@@ -1748,6 +1788,37 @@
       $2("api-key-input").value = result.dashscopeApiKey;
     }
   }
+  async function initModelSelectors() {
+    const modelSelect = $2("model-select");
+    const captchaSelect = $2("captcha-model-select");
+    for (const m of AVAILABLE_MODELS) {
+      const opt = document.createElement("option");
+      opt.value = m.id;
+      opt.textContent = m.name;
+      modelSelect.appendChild(opt);
+    }
+    for (const m of AVAILABLE_VL_MODELS) {
+      const opt = document.createElement("option");
+      opt.value = m.id;
+      opt.textContent = m.name;
+      captchaSelect.appendChild(opt);
+    }
+    const saved = await chrome.storage.local.get(["selectedModel", "selectedCaptchaModel"]);
+    modelSelect.value = saved.selectedModel || DEFAULT_MODEL;
+    captchaSelect.value = saved.selectedCaptchaModel || DEFAULT_CAPTCHA_MODEL;
+    modelSelect.addEventListener("change", () => {
+      chrome.storage.local.set({ selectedModel: modelSelect.value });
+    });
+    captchaSelect.addEventListener("change", () => {
+      chrome.storage.local.set({ selectedCaptchaModel: captchaSelect.value });
+    });
+    const thinkingToggle = $2("thinking-toggle");
+    const savedThinking = await chrome.storage.local.get(["thinkingEnabled"]);
+    thinkingToggle.checked = savedThinking.thinkingEnabled || false;
+    thinkingToggle.addEventListener("change", () => {
+      chrome.storage.local.set({ thinkingEnabled: thinkingToggle.checked });
+    });
+  }
   function handleColumnSort(column) {
     if (column === currentSortColumn) {
       currentSortOrder = currentSortOrder === "asc" ? "desc" : "asc";
@@ -1802,6 +1873,7 @@
       handleSaveApiKey();
     });
     await loadSavedApiKey();
+    await initModelSelectors();
     initAutoComment();
   }
   document.addEventListener("DOMContentLoaded", init);

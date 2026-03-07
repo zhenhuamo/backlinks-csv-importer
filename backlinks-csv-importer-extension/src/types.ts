@@ -87,6 +87,7 @@ export interface LinkTemplate {
   name: string;     // 模板名称（必填，非空）
   url: string;      // 网址
   keyword: string;  // 关键词
+  email?: string;   // 邮箱（可选）
 }
 
 

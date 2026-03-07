@@ -25,6 +25,17 @@
         <button id="api-key-save-btn" type="button">保存</button>
       </div>
       <div id="api-key-message" class="api-key-message" hidden></div>
+      <div class="model-select-form">
+        <label for="model-select">文本模型</label>
+        <select id="model-select"></select>
+      </div>
+      <div class="model-select-form">
+        <label for="captcha-model-select">验证码模型</label>
+        <select id="captcha-model-select"></select>
+      </div>
+      <div class="thinking-toggle">
+        <label><input type="checkbox" id="thinking-toggle"> 启用思考模式（更聪明但更慢）</label>
+      </div>
     </section>
 
     <div id="auto-comment-status" class="auto-comment-status" hidden></div>
@@ -119,6 +130,10 @@
         <div class="form-group">
           <label for="template-keyword">关键词</label>
           <input type="text" id="template-keyword" placeholder="输入关键词">
+        </div>
+        <div class="form-group">
+          <label for="template-email">邮箱</label>
+          <input type="email" id="template-email" placeholder="输入邮箱（可选）">
         </div>
         <div class="form-actions">
           <button id="template-save-btn" type="button">保存</button>

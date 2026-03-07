@@ -7,6 +7,7 @@ import { resolveStatus } from './status-resolver';
 import { executeWithRateLimit } from './rate-limiter';
 import { initTemplateManager } from './link-template';
 import { initAutoComment } from './auto-comment';
+import { AVAILABLE_MODELS, AVAILABLE_VL_MODELS, DEFAULT_MODEL, DEFAULT_CAPTCHA_MODEL } from './ai-comment-generator';
 
 // --- State ---
 let currentRecords: BacklinkRecord[] = [];
@@ -533,6 +534,54 @@ async function loadSavedApiKey(): Promise<void> {
   }
 }
 
+/**
+ * 初始化模型选择器：填充选项并加载已保存的选择
+ */
+async function initModelSelectors(): Promise<void> {
+  const modelSelect = $('model-select') as HTMLSelectElement;
+  const captchaSelect = $('captcha-model-select') as HTMLSelectElement;
+
+  // 填充文本模型选项
+  for (const m of AVAILABLE_MODELS) {
+    const opt = document.createElement('option');
+    opt.value = m.id;
+    opt.textContent = m.name;
+    modelSelect.appendChild(opt);
+  }
+
+  // 填充验证码模型选项
+  for (const m of AVAILABLE_VL_MODELS) {
+    const opt = document.createElement('option');
+    opt.value = m.id;
+    opt.textContent = m.name;
+    captchaSelect.appendChild(opt);
+  }
+
+  // 加载已保存的选择
+  const saved = await chrome.storage.local.get(['selectedModel', 'selectedCaptchaModel']) as {
+    selectedModel?: string;
+    selectedCaptchaModel?: string;
+  };
+  modelSelect.value = saved.selectedModel || DEFAULT_MODEL;
+  captchaSelect.value = saved.selectedCaptchaModel || DEFAULT_CAPTCHA_MODEL;
+
+  // 监听变化自动保存
+  modelSelect.addEventListener('change', () => {
+    chrome.storage.local.set({ selectedModel: modelSelect.value });
+  });
+  captchaSelect.addEventListener('change', () => {
+    chrome.storage.local.set({ selectedCaptchaModel: captchaSelect.value });
+  });
+
+  // 思考模式开关
+  const thinkingToggle = $('thinking-toggle') as HTMLInputElement;
+  const savedThinking = await chrome.storage.local.get(['thinkingEnabled']) as { thinkingEnabled?: boolean };
+  thinkingToggle.checked = savedThinking.thinkingEnabled || false;
+  thinkingToggle.addEventListener('change', () => {
+    chrome.storage.local.set({ thinkingEnabled: thinkingToggle.checked });
+  });
+}
+
 
 // --- Column sort click handler ---
 
@@ -628,6 +677,9 @@ async function init(): Promise<void> {
 
   // Load saved API Key
   await loadSavedApiKey();
+
+  // Initialize model selectors
+  await initModelSelectors();
 
   // Initialize auto-comment module
   initAutoComment();
