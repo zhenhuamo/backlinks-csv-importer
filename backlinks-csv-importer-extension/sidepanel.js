@@ -884,28 +884,122 @@
     return "uncertain";
   }
 
+  // src/operation-controller.ts
+  var CancelledError = class extends Error {
+    constructor(message = "\u64CD\u4F5C\u5DF2\u53D6\u6D88") {
+      super(message);
+      this.name = "CancelledError";
+    }
+  };
+  var OperationController = class {
+    constructor() {
+      this._state = "idle";
+      this._abortController = null;
+      this._pauseResolve = null;
+    }
+    get state() {
+      return this._state;
+    }
+    get signal() {
+      if (!this._abortController) {
+        this._abortController = new AbortController();
+      }
+      return this._abortController.signal;
+    }
+    /** idle → running，创建新的 AbortController */
+    start() {
+      if (this._state !== "idle") return;
+      this._abortController = new AbortController();
+      this._state = "running";
+    }
+    /** running → paused */
+    pause() {
+      if (this._state !== "running") return;
+      this._state = "paused";
+    }
+    /** paused → running，解除暂停阻塞 */
+    resume() {
+      if (this._state !== "paused") return;
+      this._state = "running";
+      if (this._pauseResolve) {
+        this._pauseResolve();
+        this._pauseResolve = null;
+      }
+    }
+    /** running|paused → cancelled，调用 abort() */
+    cancel() {
+      if (this._state !== "running" && this._state !== "paused") return;
+      if (this._state === "paused" && this._pauseResolve) {
+        this._pauseResolve();
+        this._pauseResolve = null;
+      }
+      this._state = "cancelled";
+      if (this._abortController) {
+        this._abortController.abort();
+      }
+    }
+    /** cancelled → idle，重置所有内部状态 */
+    reset() {
+      if (this._state !== "cancelled") return;
+      this._state = "idle";
+      this._abortController = null;
+      this._pauseResolve = null;
+    }
+    /**
+     * 在任务循环中调用，暂停时 await 此方法会阻塞直到 resume
+     * 非暂停状态立即返回
+     */
+    waitIfPaused() {
+      if (this._state !== "paused") {
+        return Promise.resolve();
+      }
+      return new Promise((resolve) => {
+        this._pauseResolve = resolve;
+      });
+    }
+    /**
+     * 检查是否已取消，已取消则抛出 CancelledError
+     */
+    throwIfCancelled() {
+      if (this._state === "cancelled") {
+        throw new CancelledError();
+      }
+    }
+  };
+
   // src/rate-limiter.ts
   function delay(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
-  function withTimeout(task, timeoutMs) {
+  function withTimeout(task, timeoutMs, signal) {
     return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(new CancelledError());
+        return;
+      }
       const timer = setTimeout(() => {
         reject(new Error(`Task timed out after ${timeoutMs}ms`));
       }, timeoutMs);
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(new CancelledError());
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
       task().then(
         (result) => {
           clearTimeout(timer);
+          signal?.removeEventListener("abort", onAbort);
           resolve(result);
         },
         (error) => {
           clearTimeout(timer);
+          signal?.removeEventListener("abort", onAbort);
           reject(error);
         }
       );
     });
   }
-  async function executeWithRateLimit(tasks, options, onProgress) {
+  async function executeWithRateLimit(tasks, options, onProgress, controller) {
     const { maxConcurrent, delayMs, timeoutMs } = options;
     const total = tasks.length;
     if (total === 0) {
@@ -914,6 +1008,7 @@
     const results = new Array(total);
     const errors = new Array(total);
     let completed = 0;
+    let cancelledError = null;
     let activeCount = 0;
     const waitQueue = [];
     async function acquire() {
@@ -937,12 +1032,31 @@
       }
     }
     const taskPromises = tasks.map(async (task, index) => {
+      if (controller?.signal.aborted) return;
       await acquire();
+      if (controller) {
+        try {
+          controller.throwIfCancelled();
+          await controller.waitIfPaused();
+          controller.throwIfCancelled();
+        } catch (e) {
+          if (e instanceof CancelledError) {
+            cancelledError = e;
+            await release();
+            return;
+          }
+          throw e;
+        }
+      }
       try {
-        const result = await withTimeout(task, timeoutMs);
+        const result = await withTimeout(task, timeoutMs, controller?.signal);
         results[index] = result;
       } catch (error) {
-        errors[index] = error instanceof Error ? error : new Error(String(error));
+        if (error instanceof CancelledError) {
+          cancelledError = error;
+        } else {
+          errors[index] = error instanceof Error ? error : new Error(String(error));
+        }
       } finally {
         completed++;
         if (onProgress) {
@@ -952,6 +1066,9 @@
       }
     });
     await Promise.all(taskPromises);
+    if (cancelledError) {
+      throw cancelledError;
+    }
     for (let i = 0; i < total; i++) {
       if (errors[i]) {
         throw errors[i];
@@ -1200,8 +1317,9 @@
     const lower = message.toLowerCase();
     return CAPTCHA_ERROR_KEYWORDS.some((kw) => lower.includes(kw.toLowerCase()));
   }
-  async function runAutoComment() {
+  async function runAutoComment(controller) {
     const btn = document.getElementById("auto-comment-btn");
+    let formSubmitted = false;
     try {
       const template = await getSelectedTemplate();
       if (!template) {
@@ -1241,6 +1359,7 @@
         return;
       }
       const { snapshot } = snapshotResp;
+      controller?.throwIfCancelled();
       if (!snapshot.forms || snapshot.forms.length === 0) {
         updateStatus("\u672A\u5728\u9875\u9762\u4E2D\u68C0\u6D4B\u5230\u8BC4\u8BBA\u8868\u5355", "error");
         return;
@@ -1255,10 +1374,12 @@
         return;
       }
       const { actions, hasCaptcha } = analyzeResp;
+      controller?.throwIfCancelled();
       if (!actions || actions.length === 0) {
         updateStatus("AI \u672A\u80FD\u89C4\u5212\u64CD\u4F5C\u6307\u4EE4\uFF0C\u8BF7\u91CD\u8BD5", "error");
         return;
       }
+      controller?.throwIfCancelled();
       updateStatus("\u6B63\u5728\u6A21\u62DF\u4EBA\u7C7B\u64CD\u4F5C\uFF08\u8BF7\u52FF\u5207\u6362\u6807\u7B7E\u9875\uFF09...", "info");
       const execResp = await chrome.runtime.sendMessage({
         action: "execute-actions",
@@ -1268,6 +1389,7 @@
         updateStatus(execResp?.error || "\u64CD\u4F5C\u6267\u884C\u5931\u8D25", "error");
         return;
       }
+      formSubmitted = true;
       let finalSuccess = false;
       let finalCaptcha = hasCaptcha;
       let retryCount = 0;
@@ -1276,6 +1398,7 @@
       const MAX_CAPTCHA_RETRIES = 2;
       let lastComment = analyzeResp.comment || "";
       for (let round = 0; round < 5; round++) {
+        controller?.throwIfCancelled();
         updateStatus("\u7B49\u5F85\u9875\u9762\u54CD\u5E94...", "info");
         await new Promise((r) => setTimeout(r, 3e3));
         let verifySnapshot;
@@ -1406,18 +1529,20 @@
         updateStatus("\u64CD\u4F5C\u5DF2\u5B8C\u6210\uFF0C\u8BF7\u68C0\u67E5\u9875\u9762\u786E\u8BA4\u8BC4\u8BBA\u662F\u5426\u53D1\u5E03\u6210\u529F", "warning");
       }
     } catch (error) {
-      updateStatus(`\u51FA\u9519: ${error?.message || error}`, "error");
+      if (error instanceof CancelledError) {
+        if (formSubmitted) {
+          updateStatus("\u8BC4\u8BBA\u53EF\u80FD\u5DF2\u63D0\u4EA4\uFF0C\u8BF7\u68C0\u67E5\u9875\u9762\u786E\u8BA4", "warning");
+        } else {
+          updateStatus("\u8BC4\u8BBA\u64CD\u4F5C\u5DF2\u53D6\u6D88", "info");
+        }
+      } else {
+        updateStatus(`\u51FA\u9519: ${error?.message || error}`, "error");
+      }
     } finally {
       btn.disabled = false;
     }
   }
   function initAutoComment() {
-    const btn = document.getElementById("auto-comment-btn");
-    if (btn) {
-      btn.addEventListener("click", () => {
-        runAutoComment();
-      });
-    }
   }
 
   // src/sidepanel.ts
@@ -1426,6 +1551,8 @@
   var currentSortOrder = "desc";
   var currentCommentStatuses = {};
   var currentFilterStatus = "all";
+  var cleanseController = new OperationController();
+  var autoCommentController = new OperationController();
   function $2(id) {
     return document.getElementById(id);
   }
@@ -1691,12 +1818,59 @@
       reader.readAsText(file);
     });
   }
+  function updateCleanseButtonState() {
+    const cleanseBtn = $2("cleanse-btn");
+    const cancelBtn = $2("cleanse-cancel-btn");
+    const progressBar = $2("cleanse-progress-bar");
+    const statusText = $2("cleanse-status-text");
+    switch (cleanseController.state) {
+      case "running":
+        cleanseBtn.textContent = "\u6682\u505C";
+        cleanseBtn.disabled = false;
+        cancelBtn.hidden = false;
+        statusText.textContent = "\u6B63\u5728\u6E05\u6D17...";
+        statusText.className = "";
+        progressBar.classList.remove("paused");
+        break;
+      case "paused":
+        cleanseBtn.textContent = "\u7EE7\u7EED";
+        cleanseBtn.disabled = false;
+        cancelBtn.hidden = false;
+        statusText.textContent = "\u5DF2\u6682\u505C";
+        statusText.className = "status-paused";
+        progressBar.classList.add("paused");
+        break;
+      default:
+        cleanseBtn.textContent = "\u6E05\u6D17 URL";
+        cleanseBtn.disabled = false;
+        cancelBtn.hidden = true;
+        statusText.textContent = "";
+        statusText.className = "";
+        progressBar.classList.remove("paused");
+        break;
+    }
+  }
+  function resetCleanseUI(delayMs = 3e3) {
+    setTimeout(() => {
+      const cleanseBtn = $2("cleanse-btn");
+      const cancelBtn = $2("cleanse-cancel-btn");
+      const statusText = $2("cleanse-status-text");
+      const progressBar = $2("cleanse-progress-bar");
+      cleanseBtn.textContent = "\u6E05\u6D17 URL";
+      cleanseBtn.disabled = false;
+      cancelBtn.hidden = true;
+      statusText.textContent = "";
+      statusText.className = "";
+      progressBar.classList.remove("paused");
+    }, delayMs);
+  }
   async function handleCleanse() {
     const cleanseBtn = $2("cleanse-btn");
     const progressSection = $2("cleanse-progress");
     const progressBar = $2("cleanse-progress-bar");
     const progressText = $2("cleanse-progress-text");
-    cleanseBtn.disabled = true;
+    cleanseController.start();
+    updateCleanseButtonState();
     progressSection.hidden = false;
     try {
       const { filtered, pending } = applyStaticFilter(currentRecords);
@@ -1729,7 +1903,7 @@
         maxConcurrent: 3,
         delayMs: 500,
         timeoutMs: 1e4
-      }, onProgress);
+      }, onProgress, cleanseController);
       for (const result of results) {
         statuses[result.url] = result.status;
       }
@@ -1740,10 +1914,18 @@
       $2("status-filter-section").hidden = false;
       renderTableWithStatus();
     } catch (error) {
-      console.error("\u6E05\u6D17\u8FC7\u7A0B\u51FA\u9519:", error);
+      if (error instanceof CancelledError) {
+        console.log("\u6E05\u6D17\u64CD\u4F5C\u5DF2\u53D6\u6D88");
+      } else {
+        console.error("\u6E05\u6D17\u8FC7\u7A0B\u51FA\u9519:", error);
+      }
     } finally {
-      cleanseBtn.disabled = false;
+      if (cleanseController.state === "running" || cleanseController.state === "paused") {
+        cleanseController.cancel();
+      }
+      cleanseController.reset();
       progressSection.hidden = true;
+      resetCleanseUI(0);
     }
   }
   async function handleClear() {
@@ -1856,7 +2038,24 @@
       handleClear();
     });
     $2("cleanse-btn").addEventListener("click", () => {
-      handleCleanse();
+      if (cleanseController.state === "idle") {
+        handleCleanse();
+      } else if (cleanseController.state === "running") {
+        cleanseController.pause();
+        updateCleanseButtonState();
+      } else if (cleanseController.state === "paused") {
+        cleanseController.resume();
+        updateCleanseButtonState();
+      }
+    });
+    $2("cleanse-cancel-btn").addEventListener("click", () => {
+      if (cleanseController.state === "running" || cleanseController.state === "paused") {
+        const confirmed = confirm("\u786E\u5B9A\u8981\u53D6\u6D88\u6E05\u6D17\u64CD\u4F5C\u5417\uFF1F\u5DF2\u5B8C\u6210\u7684\u8FDB\u5EA6\u5C06\u4E22\u5931\u3002");
+        if (confirmed) {
+          cleanseController.cancel();
+          updateCleanseButtonState();
+        }
+      }
     });
     const headers = document.querySelectorAll("#data-table thead th[data-column]");
     for (const th of headers) {
@@ -1875,6 +2074,42 @@
     await loadSavedApiKey();
     await initModelSelectors();
     initAutoComment();
+    const autoCommentBtn = $2("auto-comment-btn");
+    autoCommentBtn.addEventListener("click", async () => {
+      const currentState = autoCommentController.state;
+      if (currentState === "idle") {
+        autoCommentController.start();
+        autoCommentBtn.textContent = "\u53D6\u6D88\u8BC4\u8BBA";
+        try {
+          await runAutoComment(autoCommentController);
+        } finally {
+          const finalState = autoCommentController.state;
+          if (finalState === "running" || finalState === "paused") {
+            autoCommentController.cancel();
+          }
+          autoCommentController.reset();
+          setTimeout(() => {
+            autoCommentBtn.textContent = "\u81EA\u52A8\u8BC4\u8BBA";
+            autoCommentBtn.disabled = false;
+          }, 3e3);
+        }
+      } else if (currentState === "running") {
+        autoCommentController.cancel();
+        autoCommentBtn.textContent = "\u81EA\u52A8\u8BC4\u8BBA";
+        autoCommentBtn.disabled = false;
+      }
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      if (cleanseController.state === "running") {
+        cleanseController.pause();
+        updateCleanseButtonState();
+      } else if (autoCommentController.state === "running") {
+        autoCommentController.cancel();
+        autoCommentBtn.textContent = "\u81EA\u52A8\u8BC4\u8BBA";
+        autoCommentBtn.disabled = false;
+      }
+    });
   }
   document.addEventListener("DOMContentLoaded", init);
 })();

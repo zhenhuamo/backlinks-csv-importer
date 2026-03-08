@@ -757,3 +757,32 @@ button:active {
   color: #991b1b;
   background: #fee2e2;
 }
+
+/* ===== Cleanse Cancel Button ===== */
+#cleanse-cancel-btn {
+  background: #fee2e2;
+  color: #dc2626;
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
+#cleanse-cancel-btn:hover {
+  background: #fecaca;
+}
+
+/* ===== Paused Progress Bar ===== */
+.progress-bar.paused {
+  background: #f59e0b;
+}
+
+/* ===== Cleanse Status Text ===== */
+#cleanse-status-text {
+  font-size: 12px;
+  color: #6b7280;
+  white-space: nowrap;
+}
+
+#cleanse-status-text.status-paused {
+  color: #f59e0b;
+  font-weight: 500;
+}

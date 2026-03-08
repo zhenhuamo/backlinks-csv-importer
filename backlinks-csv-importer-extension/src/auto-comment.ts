@@ -1,5 +1,6 @@
 import { LinkTemplate } from './types';
 import { setModel, setCaptchaModel, setThinkingEnabled, DEFAULT_MODEL, DEFAULT_CAPTCHA_MODEL } from './ai-comment-generator';
+import { OperationController, CancelledError } from './operation-controller';
 
 /** 验证码错误关键词（用于重试判断） */
 const CAPTCHA_ERROR_KEYWORDS = ['验证码', 'captcha', '認証コード', '認証', 'verification code', 'wrong code', 'incorrect code'];
@@ -70,8 +71,11 @@ function isCaptchaError(message: string): boolean {
  * 2. AI 分析页面 + 生成评论 + 规划操作
  * 3. 按 AI 指令逐步执行（滚动、输入、点击）
  */
-async function runAutoComment(): Promise<void> {
+export async function runAutoComment(controller?: OperationController): Promise<void> {
   const btn = document.getElementById('auto-comment-btn') as HTMLButtonElement;
+
+  // 跟踪表单是否已提交（用于取消时的特殊警告）
+  let formSubmitted = false;
 
   try {
     // 验证前置条件
@@ -123,6 +127,9 @@ async function runAutoComment(): Promise<void> {
 
     const { snapshot } = snapshotResp;
 
+    // 取消检查点：Step 1（截取快照）之后
+    controller?.throwIfCancelled();
+
     if (!snapshot.forms || snapshot.forms.length === 0) {
       updateStatus('未在页面中检测到评论表单', 'error');
       return;
@@ -141,10 +148,16 @@ async function runAutoComment(): Promise<void> {
 
     const { actions, hasCaptcha } = analyzeResp;
 
+    // 取消检查点：Step 2（AI 分析）之后
+    controller?.throwIfCancelled();
+
     if (!actions || actions.length === 0) {
       updateStatus('AI 未能规划操作指令，请重试', 'error');
       return;
     }
+
+    // 取消检查点：Step 3（执行操作）之前
+    controller?.throwIfCancelled();
 
     // Step 3: 执行操作指令（模拟人类操作）
     updateStatus('正在模拟人类操作（请勿切换标签页）...', 'info');
@@ -158,6 +171,9 @@ async function runAutoComment(): Promise<void> {
       return;
     }
 
+    // 标记表单已提交
+    formSubmitted = true;
+
     // Step 4: 提交后验证 + 自动纠错循环（最多 5 轮：确认页 + 重试）
     let finalSuccess = false;
     let finalCaptcha = hasCaptcha;
@@ -168,6 +184,9 @@ async function runAutoComment(): Promise<void> {
     let lastComment = analyzeResp.comment || '';
 
     for (let round = 0; round < 5; round++) {
+      // 取消检查点：Step 4（验证循环）每轮开始时
+      controller?.throwIfCancelled();
+
       // 等待页面加载/跳转
       updateStatus('等待页面响应...', 'info');
       await new Promise(r => setTimeout(r, 3000));
@@ -333,18 +352,25 @@ async function runAutoComment(): Promise<void> {
       updateStatus('操作已完成，请检查页面确认评论是否发布成功', 'warning');
     }
   } catch (error: any) {
-    updateStatus(`出错: ${error?.message || error}`, 'error');
+    if (error instanceof CancelledError) {
+      if (formSubmitted) {
+        updateStatus('评论可能已提交，请检查页面确认', 'warning');
+      } else {
+        updateStatus('评论操作已取消', 'info');
+      }
+    } else {
+      updateStatus(`出错: ${error?.message || error}`, 'error');
+    }
   } finally {
     btn.disabled = false;
   }
 }
 
 /**
- * 初始化自动评论模块，绑定按钮事件
+ * 初始化自动评论模块
+ * 注意：按钮事件绑定已移至 sidepanel.ts 中统一管理（支持取消控制）
  */
 export function initAutoComment(): void {
-  const btn = document.getElementById('auto-comment-btn');
-  if (btn) {
-    btn.addEventListener('click', () => { runAutoComment(); });
-  }
+  // Button click binding is now handled in sidepanel.ts
+  // to integrate with OperationController for cancel support
 }

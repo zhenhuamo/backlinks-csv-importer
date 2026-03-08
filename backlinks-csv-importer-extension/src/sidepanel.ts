@@ -6,8 +6,9 @@ import { fetchAndAnalyze } from './page-analyzer';
 import { resolveStatus } from './status-resolver';
 import { executeWithRateLimit } from './rate-limiter';
 import { initTemplateManager } from './link-template';
-import { initAutoComment } from './auto-comment';
+import { initAutoComment, runAutoComment } from './auto-comment';
 import { AVAILABLE_MODELS, AVAILABLE_VL_MODELS, DEFAULT_MODEL, DEFAULT_CAPTCHA_MODEL } from './ai-comment-generator';
+import { OperationController, CancelledError } from './operation-controller';
 
 // --- State ---
 let currentRecords: BacklinkRecord[] = [];
@@ -15,6 +16,10 @@ let currentSortColumn = 'pageAS';
 let currentSortOrder: 'asc' | 'desc' = 'desc';
 let currentCommentStatuses: CommentStatusMap = {};
 let currentFilterStatus: CommentStatus | 'all' = 'all';
+
+// --- Operation Controllers ---
+const cleanseController = new OperationController();
+const autoCommentController = new OperationController();
 
 // --- DOM helpers ---
 function $(id: string): HTMLElement {
@@ -383,15 +388,77 @@ function readFileAsText(file: File): Promise<string> {
   });
 }
 
+// --- Cleanse UI state management ---
+
+/**
+ * Update cleanse button and cancel button states based on controller state.
+ * - idle: show original "清洗 URL" button, hide cancel
+ * - running: show "暂停" button, show cancel
+ * - paused: show "继续" button, show cancel
+ */
+function updateCleanseButtonState(): void {
+  const cleanseBtn = $('cleanse-btn') as HTMLButtonElement;
+  const cancelBtn = $('cleanse-cancel-btn') as HTMLButtonElement;
+  const progressBar = $('cleanse-progress-bar');
+  const statusText = $('cleanse-status-text');
+
+  switch (cleanseController.state) {
+    case 'running':
+      cleanseBtn.textContent = '暂停';
+      cleanseBtn.disabled = false;
+      cancelBtn.hidden = false;
+      statusText.textContent = '正在清洗...';
+      statusText.className = '';
+      progressBar.classList.remove('paused');
+      break;
+    case 'paused':
+      cleanseBtn.textContent = '继续';
+      cleanseBtn.disabled = false;
+      cancelBtn.hidden = false;
+      statusText.textContent = '已暂停';
+      statusText.className = 'status-paused';
+      progressBar.classList.add('paused');
+      break;
+    default:
+      cleanseBtn.textContent = '清洗 URL';
+      cleanseBtn.disabled = false;
+      cancelBtn.hidden = true;
+      statusText.textContent = '';
+      statusText.className = '';
+      progressBar.classList.remove('paused');
+      break;
+  }
+}
+
+/**
+ * Reset cleanse UI to idle state after a delay.
+ */
+function resetCleanseUI(delayMs = 3000): void {
+  setTimeout(() => {
+    const cleanseBtn = $('cleanse-btn') as HTMLButtonElement;
+    const cancelBtn = $('cleanse-cancel-btn') as HTMLButtonElement;
+    const statusText = $('cleanse-status-text');
+    const progressBar = $('cleanse-progress-bar');
+
+    cleanseBtn.textContent = '清洗 URL';
+    cleanseBtn.disabled = false;
+    cancelBtn.hidden = true;
+    statusText.textContent = '';
+    statusText.className = '';
+    progressBar.classList.remove('paused');
+  }, delayMs);
+}
+
 // --- Cleanse handling ---
 
 /**
  * Handle "清洗 URL" button click.
- * 1. Disable button, show progress
+ * 1. Start controller, show progress
  * 2. Apply static filter
- * 3. Rate-limited fetch + analyze for pending records
+ * 3. Rate-limited fetch + analyze for pending records (with controller)
  * 4. Save results, update UI
  * 5. Show cleanse summary stats
+ * Supports pause/resume/cancel via cleanseController.
  */
 async function handleCleanse(): Promise<void> {
   const cleanseBtn = $('cleanse-btn') as HTMLButtonElement;
@@ -399,7 +466,8 @@ async function handleCleanse(): Promise<void> {
   const progressBar = $('cleanse-progress-bar');
   const progressText = $('cleanse-progress-text');
 
-  cleanseBtn.disabled = true;
+  cleanseController.start();
+  updateCleanseButtonState();
   progressSection.hidden = false;
 
   try {
@@ -432,7 +500,7 @@ async function handleCleanse(): Promise<void> {
       };
     });
 
-    // Step 4: Execute with rate limiting
+    // Step 4: Execute with rate limiting (pass controller for pause/cancel)
     const onProgress = (completed: number, _total: number) => {
       const totalCompleted = baseCompleted + completed;
       const pct = total > 0 ? (totalCompleted / total) * 100 : 100;
@@ -444,7 +512,7 @@ async function handleCleanse(): Promise<void> {
       maxConcurrent: 3,
       delayMs: 500,
       timeoutMs: 10000,
-    }, onProgress);
+    }, onProgress, cleanseController);
 
     // Step 5: Collect statuses from results
     for (const result of results) {
@@ -463,10 +531,20 @@ async function handleCleanse(): Promise<void> {
     // Step 8: Re-render table with status column
     renderTableWithStatus();
   } catch (error) {
-    console.error('清洗过程出错:', error);
+    if (error instanceof CancelledError) {
+      // Cancelled: discard results, restore UI
+      console.log('清洗操作已取消');
+    } else {
+      console.error('清洗过程出错:', error);
+    }
   } finally {
-    cleanseBtn.disabled = false;
+    // Reset controller state: cancelled → idle or running → cancelled → idle
+    if (cleanseController.state === 'running' || cleanseController.state === 'paused') {
+      cleanseController.cancel();
+    }
+    cleanseController.reset();
     progressSection.hidden = true;
+    resetCleanseUI(0);
   }
 }
 
@@ -650,9 +728,28 @@ async function init(): Promise<void> {
     handleClear();
   });
 
-  // Bind cleanse button
+  // Bind cleanse button (pause/resume toggle)
   $('cleanse-btn').addEventListener('click', () => {
-    handleCleanse();
+    if (cleanseController.state === 'idle') {
+      handleCleanse();
+    } else if (cleanseController.state === 'running') {
+      cleanseController.pause();
+      updateCleanseButtonState();
+    } else if (cleanseController.state === 'paused') {
+      cleanseController.resume();
+      updateCleanseButtonState();
+    }
+  });
+
+  // Bind cleanse cancel button
+  $('cleanse-cancel-btn').addEventListener('click', () => {
+    if (cleanseController.state === 'running' || cleanseController.state === 'paused') {
+      const confirmed = confirm('确定要取消清洗操作吗？已完成的进度将丢失。');
+      if (confirmed) {
+        cleanseController.cancel();
+        updateCleanseButtonState();
+      }
+    }
   });
 
   // Bind column sort click handlers
@@ -681,8 +778,51 @@ async function init(): Promise<void> {
   // Initialize model selectors
   await initModelSelectors();
 
-  // Initialize auto-comment module
+  // Initialize auto-comment module (template/API key helpers only)
   initAutoComment();
+
+  // Bind auto-comment button with cancel support
+  const autoCommentBtn = $('auto-comment-btn') as HTMLButtonElement;
+  autoCommentBtn.addEventListener('click', async () => {
+    const currentState = autoCommentController.state;
+    if (currentState === 'idle') {
+      // Start auto-comment
+      autoCommentController.start();
+      autoCommentBtn.textContent = '取消评论';
+      try {
+        await runAutoComment(autoCommentController);
+      } finally {
+        const finalState = autoCommentController.state;
+        if (finalState === 'running' || finalState === 'paused') {
+          autoCommentController.cancel();
+        }
+        autoCommentController.reset();
+        setTimeout(() => {
+          autoCommentBtn.textContent = '自动评论';
+          autoCommentBtn.disabled = false;
+        }, 3000);
+      }
+    } else if (currentState === 'running') {
+      // Cancel auto-comment
+      autoCommentController.cancel();
+      autoCommentBtn.textContent = '自动评论';
+      autoCommentBtn.disabled = false;
+    }
+  });
+
+  // Bind Escape key for pause/cancel
+  document.addEventListener('keydown', (event: KeyboardEvent) => {
+    if (event.key !== 'Escape') return;
+
+    if (cleanseController.state === 'running') {
+      cleanseController.pause();
+      updateCleanseButtonState();
+    } else if (autoCommentController.state === 'running') {
+      autoCommentController.cancel();
+      autoCommentBtn.textContent = '自动评论';
+      autoCommentBtn.disabled = false;
+    }
+  });
 }
 
 // Start on DOM ready
