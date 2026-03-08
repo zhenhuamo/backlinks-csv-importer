@@ -41,18 +41,22 @@ export async function getSelectedTemplate(): Promise<LinkTemplate | null> {
  * 从 chrome.storage.local 加载 API Key
  */
 export async function loadApiKey(): Promise<string | null> {
-  const result = await chrome.storage.local.get(['dashscopeApiKey']);
-  return result.dashscopeApiKey || null;
+  const result = await chrome.storage.local.get(['dashscopeApiKey']) as { dashscopeApiKey?: string };
+  return typeof result.dashscopeApiKey === 'string' ? result.dashscopeApiKey : null;
 }
 
 /**
  * 从 chrome.storage.local 加载模型设置并应用
  */
 export async function loadModelSettings(): Promise<void> {
-  const result = await chrome.storage.local.get(['selectedModel', 'selectedCaptchaModel', 'thinkingEnabled']);
-  setModel(result.selectedModel || DEFAULT_MODEL);
-  setCaptchaModel(result.selectedCaptchaModel || DEFAULT_CAPTCHA_MODEL);
-  setThinkingEnabled(result.thinkingEnabled || false);
+  const result = await chrome.storage.local.get(['selectedModel', 'selectedCaptchaModel', 'thinkingEnabled']) as {
+    selectedModel?: string;
+    selectedCaptchaModel?: string;
+    thinkingEnabled?: boolean;
+  };
+  setModel(typeof result.selectedModel === 'string' ? result.selectedModel : DEFAULT_MODEL);
+  setCaptchaModel(typeof result.selectedCaptchaModel === 'string' ? result.selectedCaptchaModel : DEFAULT_CAPTCHA_MODEL);
+  setThinkingEnabled(result.thinkingEnabled === true);
 }
 
 /**
@@ -64,6 +68,115 @@ function isCaptchaError(message: string): boolean {
   return CAPTCHA_ERROR_KEYWORDS.some(kw => lower.includes(kw.toLowerCase()));
 }
 
+export function actionsAttemptSubmit(actions?: Pick<{ type: string }, 'type'>[]): boolean {
+  return Boolean(actions?.some((action) => action.type === 'click'));
+}
+
+export function shouldShowManualCaptcha(hasCaptcha?: boolean, actions?: Pick<{ type: string }, 'type'>[]): boolean {
+  return Boolean(hasCaptcha) && !actionsAttemptSubmit(actions);
+}
+
+
+/**
+ * 截图 + VL 视觉模型验证：截取截图并调用 VL 分析，失败时降级为纯 DOM 快照验证
+ * @param tabId 当前标签页 ID
+ * @param apiKey DashScope API Key
+ * @param commentContent 刚提交的评论内容
+ * @returns 验证结果，兼容 PostSubmitResult
+ */
+async function captureAndVerify(
+  tabId: number,
+  apiKey: string,
+  commentContent: string
+): Promise<{ success: boolean; status?: string; actions?: any[]; message?: string }> {
+  const deadline = Date.now() + 15000; // 15s 总超时
+
+  const screenshots: string[] = [];
+
+  try {
+    // 1. 截取首屏截图
+    const screenshot1Resp = await chrome.runtime.sendMessage({
+      action: 'capture-screenshot',
+      payload: { tabId },
+    });
+    if (screenshot1Resp?.success && screenshot1Resp.screenshot) {
+      screenshots.push(screenshot1Resp.screenshot);
+    }
+
+    // 2. 滚动到评论区 + 截取第二张截图
+    if (Date.now() < deadline) {
+      const scrollCaptureResp = await chrome.runtime.sendMessage({
+        action: 'scroll-and-capture',
+        payload: { tabId },
+      });
+      if (scrollCaptureResp?.screenshot2) {
+        screenshots.push(scrollCaptureResp.screenshot2);
+      }
+    }
+  } catch {
+    // 截图失败，继续降级
+  }
+
+  // 3. 采集 DOM 快照
+  let verifySnapshot: any = null;
+  try {
+    const snapResp = await chrome.runtime.sendMessage({
+      action: 'snapshot-page',
+      payload: { tabId },
+    });
+    if (snapResp?.success) {
+      verifySnapshot = snapResp.snapshot;
+    }
+  } catch {
+    // DOM 快照失败
+  }
+
+  if (!verifySnapshot) {
+    return { success: false, message: '无法获取页面快照' };
+  }
+
+  // 4. 检查是否超时
+  if (Date.now() >= deadline || screenshots.length === 0) {
+    // 降级为纯 DOM 快照验证
+    try {
+      const fallbackResp = await chrome.runtime.sendMessage({
+        action: 'post-submit-analyze',
+        payload: { snapshot: verifySnapshot, apiKey, commentContent },
+      });
+      return fallbackResp || { success: false, message: '降级验证失败' };
+    } catch {
+      return { success: false, message: '降级验证失败' };
+    }
+  }
+
+  // 5. 调用 VL 分析
+  try {
+    const vlResp = await chrome.runtime.sendMessage({
+      action: 'post-submit-analyze-vl',
+      payload: { screenshots, snapshot: verifySnapshot, apiKey, commentContent },
+    });
+    if (vlResp?.success) {
+      return vlResp;
+    }
+    // VL 分析失败，降级
+    const fallbackResp = await chrome.runtime.sendMessage({
+      action: 'post-submit-analyze',
+      payload: { snapshot: verifySnapshot, apiKey, commentContent },
+    });
+    return fallbackResp || { success: false, message: '验证失败' };
+  } catch {
+    // VL 失败，降级
+    try {
+      const fallbackResp = await chrome.runtime.sendMessage({
+        action: 'post-submit-analyze',
+        payload: { snapshot: verifySnapshot, apiKey, commentContent },
+      });
+      return fallbackResp || { success: false, message: '验证失败' };
+    } catch {
+      return { success: false, message: '验证失败' };
+    }
+  }
+}
 
 /**
  * AI 驱动的自动评论流程：
@@ -171,12 +284,12 @@ export async function runAutoComment(controller?: OperationController): Promise<
       return;
     }
 
-    // 标记表单已提交
-    formSubmitted = true;
+    // 仅当本轮动作包含点击提交时，才标记已尝试提交
+    formSubmitted = actionsAttemptSubmit(actions);
 
     // Step 4: 提交后验证 + 自动纠错循环（最多 5 轮：确认页 + 重试）
     let finalSuccess = false;
-    let finalCaptcha = hasCaptcha;
+    let finalCaptcha = shouldShowManualCaptcha(hasCaptcha, actions);
     let retryCount = 0;
     const MAX_RETRIES = 3;
     let captchaRetryCount = 0;
@@ -187,39 +300,24 @@ export async function runAutoComment(controller?: OperationController): Promise<
       // 取消检查点：Step 4（验证循环）每轮开始时
       controller?.throwIfCancelled();
 
-      // 等待页面加载/跳转
+      // 等待页面加载/跳转（5秒，给慢速网站足够的刷新时间）
       updateStatus('等待页面响应...', 'info');
-      await new Promise(r => setTimeout(r, 3000));
+      await new Promise(r => setTimeout(r, 5000));
 
-      // 重新截取快照
-      let verifySnapshot: any;
-      try {
-        const snapResp = await chrome.runtime.sendMessage({
-          action: 'snapshot-page',
-          payload: { tabId },
-        });
-        if (!snapResp?.success) break;
-        verifySnapshot = snapResp.snapshot;
-      } catch {
-        break;
-      }
-
-      // AI 分析提交后的页面状态
-      updateStatus('正在验证提交结果...', 'info');
-      const verifyResp = await chrome.runtime.sendMessage({
-        action: 'post-submit-analyze',
-        payload: { snapshot: verifySnapshot, apiKey, commentContent: lastComment },
-      });
+      // 使用截图 + VL 视觉模型验证（失败时自动降级为纯 DOM 快照验证）
+      updateStatus('正在截图并验证提交结果...', 'info');
+      const verifyResp = await captureAndVerify(tabId, apiKey, lastComment);
 
       if (!verifyResp?.success) break;
 
       if (verifyResp.status === 'success') {
         finalSuccess = true;
+        finalCaptcha = false;
         break;
       }
 
       // 确认页处理（优先于可见性检查，因为确认页上的评论预览不等于已发布）
-      if (verifyResp.status === 'confirmation_page' && verifyResp.actions?.length > 0) {
+      if (verifyResp.status === 'confirmation_page' && (verifyResp.actions?.length ?? 0) > 0) {
         updateStatus('检测到确认页面，正在点击提交...', 'info');
         const confirmResp = await chrome.runtime.sendMessage({
           action: 'execute-actions',
@@ -229,13 +327,27 @@ export async function runAutoComment(controller?: OperationController): Promise<
           updateStatus('确认提交失败', 'error');
           return;
         }
+        formSubmitted = actionsAttemptSubmit(verifyResp.actions);
+        finalCaptcha = false;
         continue;
       }
 
       // 评论可见性安全网：仅在 unknown 状态时检查（AI 无法确定时用可见性兜底）
       if (verifyResp.status === 'unknown') {
-        if (lastComment && verifySnapshot?.bodyExcerpt &&
-            isCommentVisibleOnPage(verifySnapshot.bodyExcerpt, lastComment)) {
+        // 获取 DOM 快照用于可见性检查
+        let bodyExcerpt = '';
+        try {
+          const snapResp = await chrome.runtime.sendMessage({
+            action: 'snapshot-page',
+            payload: { tabId },
+          });
+          if (snapResp?.success) {
+            bodyExcerpt = snapResp.snapshot?.bodyExcerpt || '';
+          }
+        } catch { /* ignore */ }
+
+        if (lastComment && bodyExcerpt &&
+            isCommentVisibleOnPage(bodyExcerpt, lastComment)) {
           finalSuccess = true;
           break;
         }
@@ -273,6 +385,7 @@ export async function runAutoComment(controller?: OperationController): Promise<
             }
 
             lastComment = captchaRetryAnalyze.comment || lastComment;
+            finalCaptcha = shouldShowManualCaptcha(captchaRetryAnalyze.hasCaptcha, captchaRetryAnalyze.actions);
 
             updateStatus(`正在重新填写验证码并提交（第 ${captchaRetryCount} 次重试）...`, 'info');
             const captchaRetryExec = await chrome.runtime.sendMessage({
@@ -283,10 +396,12 @@ export async function runAutoComment(controller?: OperationController): Promise<
               updateStatus('验证码重试执行失败', 'error');
               return;
             }
+            formSubmitted = actionsAttemptSubmit(captchaRetryAnalyze.actions);
             continue;
           }
           
           // 验证码重试次数用完
+          finalCaptcha = true;
           updateStatus('验证码多次识别失败，请手动完成验证码并提交', 'warning');
           return;
         }
@@ -324,6 +439,7 @@ export async function runAutoComment(controller?: OperationController): Promise<
           }
 
           lastComment = retryAnalyze.comment || lastComment;
+          finalCaptcha = shouldShowManualCaptcha(retryAnalyze.hasCaptcha, retryAnalyze.actions);
 
           updateStatus(`正在重新填写并提交（第 ${retryCount} 次重试）...`, 'info');
           const retryExec = await chrome.runtime.sendMessage({
@@ -334,6 +450,7 @@ export async function runAutoComment(controller?: OperationController): Promise<
             updateStatus('重试执行失败', 'error');
             return;
           }
+          formSubmitted = actionsAttemptSubmit(retryAnalyze.actions);
           continue;
         }
 
@@ -344,10 +461,10 @@ export async function runAutoComment(controller?: OperationController): Promise<
       break;
     }
 
-    if (finalCaptcha) {
-      updateStatus('检测到验证码，已填写表单，请手动完成验证码并提交', 'warning');
-    } else if (finalSuccess) {
+    if (finalSuccess) {
       updateStatus('评论已成功发布 ✓', 'success');
+    } else if (finalCaptcha) {
+      updateStatus('检测到需要人工处理的验证码，请完成后再提交', 'warning');
     } else {
       updateStatus('操作已完成，请检查页面确认评论是否发布成功', 'warning');
     }

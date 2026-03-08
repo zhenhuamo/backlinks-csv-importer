@@ -11,16 +11,111 @@ if ((window as any).__autoCommentInjected) {
   (window as any).__autoCommentInjected = true;
 }
 
-import { PageSnapshot, SnapshotElement, AIAction, CaptchaInfo } from './types';
+import { PageSnapshot, SnapshotElement, AIAction, CaptchaInfo, ScrollToCommentsResult } from './types';
 
-/** 验证码图片检测关键词 */
-const CAPTCHA_IMAGE_KEYWORDS = ['captcha', 'verify', 'verification', 'seccode', '验证码', '認証', 'vcode'];
+/** 验证码图片检测关键词（避免使用过泛的 verify / verification） */
+const CAPTCHA_IMAGE_KEYWORDS = ['captcha', 'seccode', '验证码', '驗證碼', '認証', '認証コード'];
 
 /** 验证码输入框检测关键词 */
-const CAPTCHA_INPUT_KEYWORDS = ['captcha', 'verify', 'verification', 'seccode', '验证码', '認証', 'vcode'];
+const CAPTCHA_INPUT_KEYWORDS = ['captcha', 'seccode', '验证码', '驗證碼', '認証', '認証コード'];
 
 /** 复杂验证码检测选择器（不尝试自动识别） */
 const COMPLEX_CAPTCHA_SELECTORS = ['.g-recaptcha', '[class*="recaptcha"]', '[class*="hcaptcha"]', '[data-sitekey]'];
+
+const COMMENT_FIELD_KEYWORDS = ['comment', 'message', 'content', 'review', 'reply', '留言', '评论', '評論', 'コメント', '本文'];
+const IDENTITY_FIELD_KEYWORDS = ['author', 'name', 'email', 'mail', 'url', 'website', 'homepage', '昵称', '姓名', '名前'];
+
+function normalizeText(value: string | null | undefined): string {
+  return (value || '').trim().toLowerCase();
+}
+
+function isElementVisible(el: Element): boolean {
+  const node = el as HTMLElement;
+  const style = window.getComputedStyle(node);
+  const rect = node.getBoundingClientRect();
+  return style.display !== 'none'
+    && style.visibility !== 'hidden'
+    && style.opacity !== '0'
+    && rect.width > 0
+    && rect.height > 0;
+}
+
+function elementMatchesKeywords(el: Element, keywords: string[]): boolean {
+  const attrs = [
+    el.getAttribute('name'),
+    el.getAttribute('id'),
+    el.getAttribute('placeholder'),
+    el.getAttribute('aria-label'),
+    el.getAttribute('class'),
+    el.textContent,
+  ];
+
+  return attrs.some((attr) => {
+    const normalized = normalizeText(attr);
+    return normalized && keywords.some((kw) => normalized.includes(kw.toLowerCase()));
+  });
+}
+
+function isLikelyCommentForm(form: HTMLFormElement): boolean {
+  const hasVisibleSubmit = Array.from(form.querySelectorAll('button, input[type="submit"], input[type="button"]'))
+    .some((el) => isElementVisible(el));
+  const hasCommentField = Array.from(form.querySelectorAll('textarea, [contenteditable="true"], input[type="text"]'))
+    .some((el) => {
+      if (!isElementVisible(el)) return false;
+      if (el.matches('textarea, [contenteditable="true"]')) return true;
+      return elementMatchesKeywords(el, COMMENT_FIELD_KEYWORDS);
+    });
+  const hasIdentityField = Array.from(form.querySelectorAll('input, textarea'))
+    .some((el) => isElementVisible(el) && elementMatchesKeywords(el, IDENTITY_FIELD_KEYWORDS));
+
+  return hasVisibleSubmit && (hasCommentField || hasIdentityField);
+}
+
+function getRelevantCaptchaScopes(forms: HTMLFormElement[]): ParentNode[] {
+  if (forms.length > 0) {
+    return forms;
+  }
+
+  const commentContainers = ['#comments', '.comments', '#respond', '.comment-respond', '.comments-area'];
+  for (const selector of commentContainers) {
+    const el = document.querySelector(selector);
+    if (el) return [el];
+  }
+
+  return [document];
+}
+
+function collectCaptchaSignals(scopes: ParentNode[]): string[] {
+  const signals = new Set<string>();
+
+  for (const scope of scopes) {
+    for (const selector of COMPLEX_CAPTCHA_SELECTORS) {
+      const matches = scope.querySelectorAll(selector);
+      for (const el of matches) {
+        if (isElementVisible(el)) {
+          signals.add(`复杂验证码元素: ${buildSelector(el)}`);
+        }
+      }
+    }
+
+    const genericMatches = scope.querySelectorAll('[class*="captcha"], [id*="captcha"], [aria-label*="captcha" i]');
+    for (const el of genericMatches) {
+      if (isElementVisible(el)) {
+        signals.add(`验证码相关元素: ${buildSelector(el)}`);
+      }
+    }
+
+    const iframes = scope.querySelectorAll('iframe');
+    for (const iframe of iframes) {
+      const src = normalizeText(iframe.getAttribute('src'));
+      if (src && (src.includes('captcha') || src.includes('recaptcha') || src.includes('hcaptcha')) && isElementVisible(iframe)) {
+        signals.add(`验证码 iframe: ${buildSelector(iframe)}`);
+      }
+    }
+  }
+
+  return Array.from(signals);
+}
 
 // ============================================================
 // 页面快照：捕获页面结构供 AI 理解
@@ -103,10 +198,12 @@ function findLabel(el: Element, form: Element): string {
  * 检测页面中的简单图片验证码
  * 返回 { imgElement, inputSelector } 或 null
  */
-function detectSimpleCaptcha(): { imgElement: HTMLImageElement; inputSelector: string } | null {
-  const imgs = document.querySelectorAll('img');
+function detectSimpleCaptcha(scopes: ParentNode[]): { imgElement: HTMLImageElement; inputSelector: string } | null {
+  const imgs = scopes.flatMap((scope) => Array.from(scope.querySelectorAll('img')));
 
   for (const img of imgs) {
+    if (!isElementVisible(img)) continue;
+
     // Skip images inside complex captcha containers
     const isInsideComplex = COMPLEX_CAPTCHA_SELECTORS.some(sel => {
       try { return img.closest(sel) !== null; } catch { return false; }
@@ -145,13 +242,13 @@ function detectSimpleCaptcha(): { imgElement: HTMLImageElement; inputSelector: s
     // Strategy 2: Adjacent sibling
     if (!input) {
       const next = img.nextElementSibling;
-      if (next && next.tagName === 'INPUT' && (next as HTMLInputElement).type === 'text') {
+      if (next && next.tagName === 'INPUT' && (next as HTMLInputElement).type === 'text' && isElementVisible(next)) {
         input = next as HTMLInputElement;
       }
     }
     if (!input) {
       const prev = img.previousElementSibling;
-      if (prev && prev.tagName === 'INPUT' && (prev as HTMLInputElement).type === 'text') {
+      if (prev && prev.tagName === 'INPUT' && (prev as HTMLInputElement).type === 'text' && isElementVisible(prev)) {
         input = prev as HTMLInputElement;
       }
     }
@@ -161,7 +258,7 @@ function detectSimpleCaptcha(): { imgElement: HTMLImageElement; inputSelector: s
       input = img.parentElement.querySelector<HTMLInputElement>('input[type="text"]');
     }
 
-    if (!input) continue;
+    if (!input || !isElementVisible(input)) continue;
 
     return { imgElement: img as HTMLImageElement, inputSelector: buildSelector(input) };
   }
@@ -266,12 +363,16 @@ export async function capturePageSnapshot(): Promise<PageSnapshot> {
   // 扫描所有表单
   const formSnapshots: PageSnapshot['forms'] = [];
   const allForms = document.querySelectorAll('form');
+  const commentForms: HTMLFormElement[] = [];
 
   for (const form of allForms) {
     const interactiveEls = form.querySelectorAll(
       'input, textarea, select, button, [contenteditable="true"]'
     );
     if (interactiveEls.length === 0) continue;
+    if (form instanceof HTMLFormElement && isLikelyCommentForm(form)) {
+      commentForms.push(form);
+    }
 
     const elements: SnapshotElement[] = [];
     for (const el of interactiveEls) {
@@ -324,18 +425,9 @@ export async function capturePageSnapshot(): Promise<PageSnapshot> {
     });
   }
 
-  // CAPTCHA 检测
-  let hasCaptcha = false;
-  const captchaSelectors = ['[class*="captcha"]', '[class*="recaptcha"]', '.g-recaptcha'];
-  for (const sel of captchaSelectors) {
-    if (document.querySelector(sel)) { hasCaptcha = true; break; }
-  }
-  if (!hasCaptcha) {
-    for (const iframe of document.querySelectorAll('iframe')) {
-      const src = (iframe.getAttribute('src') || '').toLowerCase();
-      if (src.includes('captcha') || src.includes('recaptcha')) { hasCaptcha = true; break; }
-    }
-  }
+  const captchaScopes = getRelevantCaptchaScopes(commentForms);
+  const captchaSignals = collectCaptchaSignals(captchaScopes);
+  let hasCaptcha = captchaSignals.length > 0;
 
   // HTML allowed 检测
   const htmlHints = ['可以使用的 HTML 标签', 'You may use these HTML tags', 'allowed HTML tags'];
@@ -364,7 +456,7 @@ export async function capturePageSnapshot(): Promise<PageSnapshot> {
   // 简单图片验证码检测
   let captchaInfo: CaptchaInfo | undefined;
   try {
-    const detected = detectSimpleCaptcha();
+    const detected = detectSimpleCaptcha(captchaScopes);
     if (detected) {
       const imageData = await extractCaptchaImageData(detected.imgElement);
       if (imageData) {
@@ -373,11 +465,23 @@ export async function capturePageSnapshot(): Promise<PageSnapshot> {
           inputSelector: detected.inputSelector,
           type: 'simple_image',
         };
+        hasCaptcha = true;
+        captchaSignals.push(`可自动识别的图片验证码，输入框: ${detected.inputSelector}`);
       }
     }
   } catch { /* 安全忽略，不影响主流程 */ }
 
-  return { title, bodyExcerpt, forms: formSnapshots, hasCaptcha, captchaInfo, htmlAllowed, errorMessages, pageLang };
+  return {
+    title,
+    bodyExcerpt,
+    forms: formSnapshots,
+    hasCaptcha,
+    captchaSignals,
+    captchaInfo,
+    htmlAllowed,
+    errorMessages,
+    pageLang,
+  };
 }
 
 
@@ -399,6 +503,22 @@ function randomDelay(min: number, max: number): Promise<void> {
 async function scrollTo(el: Element): Promise<void> {
   el.scrollIntoView({ behavior: 'smooth', block: 'center' });
   await delay(800);
+}
+
+async function simulateClick(el: HTMLElement): Promise<void> {
+  await scrollTo(el);
+  await randomDelay(300, 500);
+  el.focus?.();
+
+  const pointerOptions = { bubbles: true, cancelable: true, composed: true };
+  const mouseOptions = { bubbles: true, cancelable: true, view: window };
+
+  el.dispatchEvent(new PointerEvent('pointerdown', pointerOptions));
+  el.dispatchEvent(new MouseEvent('mousedown', mouseOptions));
+  await randomDelay(30, 80);
+  el.dispatchEvent(new PointerEvent('pointerup', pointerOptions));
+  el.dispatchEvent(new MouseEvent('mouseup', mouseOptions));
+  el.click();
 }
 
 /**
@@ -463,8 +583,7 @@ export async function executeActions(actions: AIAction[]): Promise<{ success: bo
   for (const action of actions) {
     const el = document.querySelector(action.selector);
     if (!el) {
-      console.warn(`[auto-comment] 找不到元素: ${action.selector}`);
-      continue; // 跳过找不到的元素，继续执行
+      return { success: false, error: `找不到元素: ${action.selector}` };
     }
 
     switch (action.type) {
@@ -485,9 +604,7 @@ export async function executeActions(actions: AIAction[]): Promise<{ success: bo
       }
 
       case 'click':
-        await scrollTo(el);
-        await randomDelay(300, 500);
-        (el as HTMLElement).click();
+        await simulateClick(el as HTMLElement);
         break;
     }
   }
@@ -495,6 +612,57 @@ export async function executeActions(actions: AIAction[]): Promise<{ success: bo
   return { success: true };
 }
 
+
+// ============================================================
+// 评论区滚动与位置恢复
+// ============================================================
+
+/** 评论区域选择器列表（按优先级排序） */
+const COMMENT_AREA_SELECTORS = [
+  '#comments', '.comments', '#respond', '.comment-list',
+  '#comment-area', '.comment-area', '#disqus_thread',
+  '.post-comments', '#reply-title', '.comments-area',
+];
+
+/**
+ * 滚动到评论区域并返回结果
+ * 找到评论区域则 scrollIntoView，否则滚动到页面底部
+ */
+async function scrollToComments(): Promise<ScrollToCommentsResult> {
+  const previousScrollY = window.scrollY;
+
+  try {
+    let found = false;
+    let scrolledTo: 'comments' | 'bottom' = 'bottom';
+
+    for (const selector of COMMENT_AREA_SELECTORS) {
+      const el = document.querySelector(selector);
+      if (el) {
+        el.scrollIntoView({ behavior: 'instant' });
+        found = true;
+        scrolledTo = 'comments';
+        break;
+      }
+    }
+
+    if (!found) {
+      window.scrollTo(0, document.body.scrollHeight);
+    }
+
+    await delay(500);
+
+    return { success: true, found, scrolledTo, previousScrollY };
+  } catch (error: any) {
+    return { success: false, found: false, scrolledTo: 'bottom', previousScrollY, error: error?.message || String(error) };
+  }
+}
+
+/**
+ * 恢复滚动位置
+ */
+function restoreScrollPosition(savedPosition: number): void {
+  window.scrollTo(0, savedPosition);
+}
 
 // ============================================================
 // 消息监听器（防止重复注册）
@@ -530,6 +698,31 @@ if (!(window as any).__autoCommentListenerRegistered) {
             sendResponse({ success: false, error: '操作执行失败' });
           }
         })();
+        return true;
+      }
+
+      // 滚动到评论区域
+      if (message.action === 'scroll-to-comments') {
+        (async () => {
+          try {
+            const result = await scrollToComments();
+            sendResponse(result);
+          } catch (error: any) {
+            sendResponse({ success: false, found: false, scrolledTo: 'bottom', previousScrollY: 0, error: error?.message || '滚动失败' });
+          }
+        })();
+        return true;
+      }
+
+      // 恢复滚动位置
+      if (message.action === 'restore-scroll') {
+        try {
+          const { scrollY: savedScrollY } = message.payload as { scrollY: number };
+          restoreScrollPosition(savedScrollY);
+          sendResponse({ success: true });
+        } catch (error: any) {
+          sendResponse({ success: false, error: error?.message || '恢复滚动位置失败' });
+        }
         return true;
       }
 

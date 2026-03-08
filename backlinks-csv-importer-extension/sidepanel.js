@@ -1304,18 +1304,96 @@
   }
   async function loadApiKey() {
     const result = await chrome.storage.local.get(["dashscopeApiKey"]);
-    return result.dashscopeApiKey || null;
+    return typeof result.dashscopeApiKey === "string" ? result.dashscopeApiKey : null;
   }
   async function loadModelSettings() {
     const result = await chrome.storage.local.get(["selectedModel", "selectedCaptchaModel", "thinkingEnabled"]);
-    setModel(result.selectedModel || DEFAULT_MODEL);
-    setCaptchaModel(result.selectedCaptchaModel || DEFAULT_CAPTCHA_MODEL);
-    setThinkingEnabled(result.thinkingEnabled || false);
+    setModel(typeof result.selectedModel === "string" ? result.selectedModel : DEFAULT_MODEL);
+    setCaptchaModel(typeof result.selectedCaptchaModel === "string" ? result.selectedCaptchaModel : DEFAULT_CAPTCHA_MODEL);
+    setThinkingEnabled(result.thinkingEnabled === true);
   }
   function isCaptchaError(message) {
     if (!message) return false;
     const lower = message.toLowerCase();
     return CAPTCHA_ERROR_KEYWORDS.some((kw) => lower.includes(kw.toLowerCase()));
+  }
+  function actionsAttemptSubmit(actions) {
+    return Boolean(actions?.some((action) => action.type === "click"));
+  }
+  function shouldShowManualCaptcha(hasCaptcha, actions) {
+    return Boolean(hasCaptcha) && !actionsAttemptSubmit(actions);
+  }
+  async function captureAndVerify(tabId, apiKey, commentContent) {
+    const deadline = Date.now() + 15e3;
+    const screenshots = [];
+    try {
+      const screenshot1Resp = await chrome.runtime.sendMessage({
+        action: "capture-screenshot",
+        payload: { tabId }
+      });
+      if (screenshot1Resp?.success && screenshot1Resp.screenshot) {
+        screenshots.push(screenshot1Resp.screenshot);
+      }
+      if (Date.now() < deadline) {
+        const scrollCaptureResp = await chrome.runtime.sendMessage({
+          action: "scroll-and-capture",
+          payload: { tabId }
+        });
+        if (scrollCaptureResp?.screenshot2) {
+          screenshots.push(scrollCaptureResp.screenshot2);
+        }
+      }
+    } catch {
+    }
+    let verifySnapshot = null;
+    try {
+      const snapResp = await chrome.runtime.sendMessage({
+        action: "snapshot-page",
+        payload: { tabId }
+      });
+      if (snapResp?.success) {
+        verifySnapshot = snapResp.snapshot;
+      }
+    } catch {
+    }
+    if (!verifySnapshot) {
+      return { success: false, message: "\u65E0\u6CD5\u83B7\u53D6\u9875\u9762\u5FEB\u7167" };
+    }
+    if (Date.now() >= deadline || screenshots.length === 0) {
+      try {
+        const fallbackResp = await chrome.runtime.sendMessage({
+          action: "post-submit-analyze",
+          payload: { snapshot: verifySnapshot, apiKey, commentContent }
+        });
+        return fallbackResp || { success: false, message: "\u964D\u7EA7\u9A8C\u8BC1\u5931\u8D25" };
+      } catch {
+        return { success: false, message: "\u964D\u7EA7\u9A8C\u8BC1\u5931\u8D25" };
+      }
+    }
+    try {
+      const vlResp = await chrome.runtime.sendMessage({
+        action: "post-submit-analyze-vl",
+        payload: { screenshots, snapshot: verifySnapshot, apiKey, commentContent }
+      });
+      if (vlResp?.success) {
+        return vlResp;
+      }
+      const fallbackResp = await chrome.runtime.sendMessage({
+        action: "post-submit-analyze",
+        payload: { snapshot: verifySnapshot, apiKey, commentContent }
+      });
+      return fallbackResp || { success: false, message: "\u9A8C\u8BC1\u5931\u8D25" };
+    } catch {
+      try {
+        const fallbackResp = await chrome.runtime.sendMessage({
+          action: "post-submit-analyze",
+          payload: { snapshot: verifySnapshot, apiKey, commentContent }
+        });
+        return fallbackResp || { success: false, message: "\u9A8C\u8BC1\u5931\u8D25" };
+      } catch {
+        return { success: false, message: "\u9A8C\u8BC1\u5931\u8D25" };
+      }
+    }
   }
   async function runAutoComment(controller) {
     const btn = document.getElementById("auto-comment-btn");
@@ -1389,9 +1467,9 @@
         updateStatus(execResp?.error || "\u64CD\u4F5C\u6267\u884C\u5931\u8D25", "error");
         return;
       }
-      formSubmitted = true;
+      formSubmitted = actionsAttemptSubmit(actions);
       let finalSuccess = false;
-      let finalCaptcha = hasCaptcha;
+      let finalCaptcha = shouldShowManualCaptcha(hasCaptcha, actions);
       let retryCount = 0;
       const MAX_RETRIES = 3;
       let captchaRetryCount = 0;
@@ -1400,29 +1478,16 @@
       for (let round = 0; round < 5; round++) {
         controller?.throwIfCancelled();
         updateStatus("\u7B49\u5F85\u9875\u9762\u54CD\u5E94...", "info");
-        await new Promise((r) => setTimeout(r, 3e3));
-        let verifySnapshot;
-        try {
-          const snapResp = await chrome.runtime.sendMessage({
-            action: "snapshot-page",
-            payload: { tabId }
-          });
-          if (!snapResp?.success) break;
-          verifySnapshot = snapResp.snapshot;
-        } catch {
-          break;
-        }
-        updateStatus("\u6B63\u5728\u9A8C\u8BC1\u63D0\u4EA4\u7ED3\u679C...", "info");
-        const verifyResp = await chrome.runtime.sendMessage({
-          action: "post-submit-analyze",
-          payload: { snapshot: verifySnapshot, apiKey, commentContent: lastComment }
-        });
+        await new Promise((r) => setTimeout(r, 5e3));
+        updateStatus("\u6B63\u5728\u622A\u56FE\u5E76\u9A8C\u8BC1\u63D0\u4EA4\u7ED3\u679C...", "info");
+        const verifyResp = await captureAndVerify(tabId, apiKey, lastComment);
         if (!verifyResp?.success) break;
         if (verifyResp.status === "success") {
           finalSuccess = true;
+          finalCaptcha = false;
           break;
         }
-        if (verifyResp.status === "confirmation_page" && verifyResp.actions?.length > 0) {
+        if (verifyResp.status === "confirmation_page" && (verifyResp.actions?.length ?? 0) > 0) {
           updateStatus("\u68C0\u6D4B\u5230\u786E\u8BA4\u9875\u9762\uFF0C\u6B63\u5728\u70B9\u51FB\u63D0\u4EA4...", "info");
           const confirmResp = await chrome.runtime.sendMessage({
             action: "execute-actions",
@@ -1432,10 +1497,23 @@
             updateStatus("\u786E\u8BA4\u63D0\u4EA4\u5931\u8D25", "error");
             return;
           }
+          formSubmitted = actionsAttemptSubmit(verifyResp.actions);
+          finalCaptcha = false;
           continue;
         }
         if (verifyResp.status === "unknown") {
-          if (lastComment && verifySnapshot?.bodyExcerpt && isCommentVisibleOnPage(verifySnapshot.bodyExcerpt, lastComment)) {
+          let bodyExcerpt = "";
+          try {
+            const snapResp = await chrome.runtime.sendMessage({
+              action: "snapshot-page",
+              payload: { tabId }
+            });
+            if (snapResp?.success) {
+              bodyExcerpt = snapResp.snapshot?.bodyExcerpt || "";
+            }
+          } catch {
+          }
+          if (lastComment && bodyExcerpt && isCommentVisibleOnPage(bodyExcerpt, lastComment)) {
             finalSuccess = true;
             break;
           }
@@ -1464,6 +1542,7 @@
                 return;
               }
               lastComment = captchaRetryAnalyze.comment || lastComment;
+              finalCaptcha = shouldShowManualCaptcha(captchaRetryAnalyze.hasCaptcha, captchaRetryAnalyze.actions);
               updateStatus(`\u6B63\u5728\u91CD\u65B0\u586B\u5199\u9A8C\u8BC1\u7801\u5E76\u63D0\u4EA4\uFF08\u7B2C ${captchaRetryCount} \u6B21\u91CD\u8BD5\uFF09...`, "info");
               const captchaRetryExec = await chrome.runtime.sendMessage({
                 action: "execute-actions",
@@ -1473,8 +1552,10 @@
                 updateStatus("\u9A8C\u8BC1\u7801\u91CD\u8BD5\u6267\u884C\u5931\u8D25", "error");
                 return;
               }
+              formSubmitted = actionsAttemptSubmit(captchaRetryAnalyze.actions);
               continue;
             }
+            finalCaptcha = true;
             updateStatus("\u9A8C\u8BC1\u7801\u591A\u6B21\u8BC6\u522B\u5931\u8D25\uFF0C\u8BF7\u624B\u52A8\u5B8C\u6210\u9A8C\u8BC1\u7801\u5E76\u63D0\u4EA4", "warning");
             return;
           }
@@ -1505,6 +1586,7 @@
               return;
             }
             lastComment = retryAnalyze.comment || lastComment;
+            finalCaptcha = shouldShowManualCaptcha(retryAnalyze.hasCaptcha, retryAnalyze.actions);
             updateStatus(`\u6B63\u5728\u91CD\u65B0\u586B\u5199\u5E76\u63D0\u4EA4\uFF08\u7B2C ${retryCount} \u6B21\u91CD\u8BD5\uFF09...`, "info");
             const retryExec = await chrome.runtime.sendMessage({
               action: "execute-actions",
@@ -1514,6 +1596,7 @@
               updateStatus("\u91CD\u8BD5\u6267\u884C\u5931\u8D25", "error");
               return;
             }
+            formSubmitted = actionsAttemptSubmit(retryAnalyze.actions);
             continue;
           }
           updateStatus("\u591A\u6B21\u91CD\u8BD5\u540E\u4ECD\u5931\u8D25: " + (verifyResp.message || "\u9875\u9762\u62A5\u9519"), "error");
@@ -1521,10 +1604,10 @@
         }
         break;
       }
-      if (finalCaptcha) {
-        updateStatus("\u68C0\u6D4B\u5230\u9A8C\u8BC1\u7801\uFF0C\u5DF2\u586B\u5199\u8868\u5355\uFF0C\u8BF7\u624B\u52A8\u5B8C\u6210\u9A8C\u8BC1\u7801\u5E76\u63D0\u4EA4", "warning");
-      } else if (finalSuccess) {
+      if (finalSuccess) {
         updateStatus("\u8BC4\u8BBA\u5DF2\u6210\u529F\u53D1\u5E03 \u2713", "success");
+      } else if (finalCaptcha) {
+        updateStatus("\u68C0\u6D4B\u5230\u9700\u8981\u4EBA\u5DE5\u5904\u7406\u7684\u9A8C\u8BC1\u7801\uFF0C\u8BF7\u5B8C\u6210\u540E\u518D\u63D0\u4EA4", "warning");
       } else {
         updateStatus("\u64CD\u4F5C\u5DF2\u5B8C\u6210\uFF0C\u8BF7\u68C0\u67E5\u9875\u9762\u786E\u8BA4\u8BC4\u8BBA\u662F\u5426\u53D1\u5E03\u6210\u529F", "warning");
       }

@@ -5,9 +5,82 @@
   } else {
     window.__autoCommentInjected = true;
   }
-  var CAPTCHA_IMAGE_KEYWORDS = ["captcha", "verify", "verification", "seccode", "\u9A8C\u8BC1\u7801", "\u8A8D\u8A3C", "vcode"];
-  var CAPTCHA_INPUT_KEYWORDS = ["captcha", "verify", "verification", "seccode", "\u9A8C\u8BC1\u7801", "\u8A8D\u8A3C", "vcode"];
+  var CAPTCHA_IMAGE_KEYWORDS = ["captcha", "seccode", "\u9A8C\u8BC1\u7801", "\u9A57\u8B49\u78BC", "\u8A8D\u8A3C", "\u8A8D\u8A3C\u30B3\u30FC\u30C9"];
+  var CAPTCHA_INPUT_KEYWORDS = ["captcha", "seccode", "\u9A8C\u8BC1\u7801", "\u9A57\u8B49\u78BC", "\u8A8D\u8A3C", "\u8A8D\u8A3C\u30B3\u30FC\u30C9"];
   var COMPLEX_CAPTCHA_SELECTORS = [".g-recaptcha", '[class*="recaptcha"]', '[class*="hcaptcha"]', "[data-sitekey]"];
+  var COMMENT_FIELD_KEYWORDS = ["comment", "message", "content", "review", "reply", "\u7559\u8A00", "\u8BC4\u8BBA", "\u8A55\u8AD6", "\u30B3\u30E1\u30F3\u30C8", "\u672C\u6587"];
+  var IDENTITY_FIELD_KEYWORDS = ["author", "name", "email", "mail", "url", "website", "homepage", "\u6635\u79F0", "\u59D3\u540D", "\u540D\u524D"];
+  function normalizeText(value) {
+    return (value || "").trim().toLowerCase();
+  }
+  function isElementVisible(el) {
+    const node = el;
+    const style = window.getComputedStyle(node);
+    const rect = node.getBoundingClientRect();
+    return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0" && rect.width > 0 && rect.height > 0;
+  }
+  function elementMatchesKeywords(el, keywords) {
+    const attrs = [
+      el.getAttribute("name"),
+      el.getAttribute("id"),
+      el.getAttribute("placeholder"),
+      el.getAttribute("aria-label"),
+      el.getAttribute("class"),
+      el.textContent
+    ];
+    return attrs.some((attr) => {
+      const normalized = normalizeText(attr);
+      return normalized && keywords.some((kw) => normalized.includes(kw.toLowerCase()));
+    });
+  }
+  function isLikelyCommentForm(form) {
+    const hasVisibleSubmit = Array.from(form.querySelectorAll('button, input[type="submit"], input[type="button"]')).some((el) => isElementVisible(el));
+    const hasCommentField = Array.from(form.querySelectorAll('textarea, [contenteditable="true"], input[type="text"]')).some((el) => {
+      if (!isElementVisible(el)) return false;
+      if (el.matches('textarea, [contenteditable="true"]')) return true;
+      return elementMatchesKeywords(el, COMMENT_FIELD_KEYWORDS);
+    });
+    const hasIdentityField = Array.from(form.querySelectorAll("input, textarea")).some((el) => isElementVisible(el) && elementMatchesKeywords(el, IDENTITY_FIELD_KEYWORDS));
+    return hasVisibleSubmit && (hasCommentField || hasIdentityField);
+  }
+  function getRelevantCaptchaScopes(forms) {
+    if (forms.length > 0) {
+      return forms;
+    }
+    const commentContainers = ["#comments", ".comments", "#respond", ".comment-respond", ".comments-area"];
+    for (const selector of commentContainers) {
+      const el = document.querySelector(selector);
+      if (el) return [el];
+    }
+    return [document];
+  }
+  function collectCaptchaSignals(scopes) {
+    const signals = /* @__PURE__ */ new Set();
+    for (const scope of scopes) {
+      for (const selector of COMPLEX_CAPTCHA_SELECTORS) {
+        const matches = scope.querySelectorAll(selector);
+        for (const el of matches) {
+          if (isElementVisible(el)) {
+            signals.add(`\u590D\u6742\u9A8C\u8BC1\u7801\u5143\u7D20: ${buildSelector(el)}`);
+          }
+        }
+      }
+      const genericMatches = scope.querySelectorAll('[class*="captcha"], [id*="captcha"], [aria-label*="captcha" i]');
+      for (const el of genericMatches) {
+        if (isElementVisible(el)) {
+          signals.add(`\u9A8C\u8BC1\u7801\u76F8\u5173\u5143\u7D20: ${buildSelector(el)}`);
+        }
+      }
+      const iframes = scope.querySelectorAll("iframe");
+      for (const iframe of iframes) {
+        const src = normalizeText(iframe.getAttribute("src"));
+        if (src && (src.includes("captcha") || src.includes("recaptcha") || src.includes("hcaptcha")) && isElementVisible(iframe)) {
+          signals.add(`\u9A8C\u8BC1\u7801 iframe: ${buildSelector(iframe)}`);
+        }
+      }
+    }
+    return Array.from(signals);
+  }
   function buildSelector(el, depth = 0) {
     if (depth > 5 || !el || el === document.documentElement || el === document.body) {
       return el?.tagName?.toLowerCase() || "body";
@@ -64,9 +137,10 @@
     }
     return "";
   }
-  function detectSimpleCaptcha() {
-    const imgs = document.querySelectorAll("img");
+  function detectSimpleCaptcha(scopes) {
+    const imgs = scopes.flatMap((scope) => Array.from(scope.querySelectorAll("img")));
     for (const img of imgs) {
+      if (!isElementVisible(img)) continue;
       const isInsideComplex = COMPLEX_CAPTCHA_SELECTORS.some((sel) => {
         try {
           return img.closest(sel) !== null;
@@ -103,20 +177,20 @@
       }
       if (!input) {
         const next = img.nextElementSibling;
-        if (next && next.tagName === "INPUT" && next.type === "text") {
+        if (next && next.tagName === "INPUT" && next.type === "text" && isElementVisible(next)) {
           input = next;
         }
       }
       if (!input) {
         const prev = img.previousElementSibling;
-        if (prev && prev.tagName === "INPUT" && prev.type === "text") {
+        if (prev && prev.tagName === "INPUT" && prev.type === "text" && isElementVisible(prev)) {
           input = prev;
         }
       }
       if (!input && img.parentElement) {
         input = img.parentElement.querySelector('input[type="text"]');
       }
-      if (!input) continue;
+      if (!input || !isElementVisible(input)) continue;
       return { imgElement: img, inputSelector: buildSelector(input) };
     }
     return null;
@@ -195,11 +269,15 @@
     }
     const formSnapshots = [];
     const allForms = document.querySelectorAll("form");
+    const commentForms = [];
     for (const form of allForms) {
       const interactiveEls = form.querySelectorAll(
         'input, textarea, select, button, [contenteditable="true"]'
       );
       if (interactiveEls.length === 0) continue;
+      if (form instanceof HTMLFormElement && isLikelyCommentForm(form)) {
+        commentForms.push(form);
+      }
       const elements = [];
       for (const el of interactiveEls) {
         const tag = el.tagName.toLowerCase();
@@ -241,23 +319,9 @@
         }]
       });
     }
-    let hasCaptcha = false;
-    const captchaSelectors = ['[class*="captcha"]', '[class*="recaptcha"]', ".g-recaptcha"];
-    for (const sel of captchaSelectors) {
-      if (document.querySelector(sel)) {
-        hasCaptcha = true;
-        break;
-      }
-    }
-    if (!hasCaptcha) {
-      for (const iframe of document.querySelectorAll("iframe")) {
-        const src = (iframe.getAttribute("src") || "").toLowerCase();
-        if (src.includes("captcha") || src.includes("recaptcha")) {
-          hasCaptcha = true;
-          break;
-        }
-      }
-    }
+    const captchaScopes = getRelevantCaptchaScopes(commentForms);
+    const captchaSignals = collectCaptchaSignals(captchaScopes);
+    let hasCaptcha = captchaSignals.length > 0;
     const htmlHints = ["\u53EF\u4EE5\u4F7F\u7528\u7684 HTML \u6807\u7B7E", "You may use these HTML tags", "allowed HTML tags"];
     const pageText = document.body?.textContent || "";
     const htmlAllowed = htmlHints.some((h) => pageText.includes(h));
@@ -289,7 +353,7 @@
     }
     let captchaInfo;
     try {
-      const detected = detectSimpleCaptcha();
+      const detected = detectSimpleCaptcha(captchaScopes);
       if (detected) {
         const imageData = await extractCaptchaImageData(detected.imgElement);
         if (imageData) {
@@ -298,11 +362,23 @@
             inputSelector: detected.inputSelector,
             type: "simple_image"
           };
+          hasCaptcha = true;
+          captchaSignals.push(`\u53EF\u81EA\u52A8\u8BC6\u522B\u7684\u56FE\u7247\u9A8C\u8BC1\u7801\uFF0C\u8F93\u5165\u6846: ${detected.inputSelector}`);
         }
       }
     } catch {
     }
-    return { title, bodyExcerpt, forms: formSnapshots, hasCaptcha, captchaInfo, htmlAllowed, errorMessages, pageLang };
+    return {
+      title,
+      bodyExcerpt,
+      forms: formSnapshots,
+      hasCaptcha,
+      captchaSignals,
+      captchaInfo,
+      htmlAllowed,
+      errorMessages,
+      pageLang
+    };
   }
   function delay(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -313,6 +389,19 @@
   async function scrollTo(el) {
     el.scrollIntoView({ behavior: "smooth", block: "center" });
     await delay(800);
+  }
+  async function simulateClick(el) {
+    await scrollTo(el);
+    await randomDelay(300, 500);
+    el.focus?.();
+    const pointerOptions = { bubbles: true, cancelable: true, composed: true };
+    const mouseOptions = { bubbles: true, cancelable: true, view: window };
+    el.dispatchEvent(new PointerEvent("pointerdown", pointerOptions));
+    el.dispatchEvent(new MouseEvent("mousedown", mouseOptions));
+    await randomDelay(30, 80);
+    el.dispatchEvent(new PointerEvent("pointerup", pointerOptions));
+    el.dispatchEvent(new MouseEvent("mouseup", mouseOptions));
+    el.click();
   }
   async function simulateTyping(el, text) {
     await scrollTo(el);
@@ -361,8 +450,7 @@
     for (const action of actions) {
       const el = document.querySelector(action.selector);
       if (!el) {
-        console.warn(`[auto-comment] \u627E\u4E0D\u5230\u5143\u7D20: ${action.selector}`);
-        continue;
+        return { success: false, error: `\u627E\u4E0D\u5230\u5143\u7D20: ${action.selector}` };
       }
       switch (action.type) {
         case "scroll":
@@ -380,13 +468,49 @@
           break;
         }
         case "click":
-          await scrollTo(el);
-          await randomDelay(300, 500);
-          el.click();
+          await simulateClick(el);
           break;
       }
     }
     return { success: true };
+  }
+  var COMMENT_AREA_SELECTORS = [
+    "#comments",
+    ".comments",
+    "#respond",
+    ".comment-list",
+    "#comment-area",
+    ".comment-area",
+    "#disqus_thread",
+    ".post-comments",
+    "#reply-title",
+    ".comments-area"
+  ];
+  async function scrollToComments() {
+    const previousScrollY = window.scrollY;
+    try {
+      let found = false;
+      let scrolledTo = "bottom";
+      for (const selector of COMMENT_AREA_SELECTORS) {
+        const el = document.querySelector(selector);
+        if (el) {
+          el.scrollIntoView({ behavior: "instant" });
+          found = true;
+          scrolledTo = "comments";
+          break;
+        }
+      }
+      if (!found) {
+        window.scrollTo(0, document.body.scrollHeight);
+      }
+      await delay(500);
+      return { success: true, found, scrolledTo, previousScrollY };
+    } catch (error) {
+      return { success: false, found: false, scrolledTo: "bottom", previousScrollY, error: error?.message || String(error) };
+    }
+  }
+  function restoreScrollPosition(savedPosition) {
+    window.scrollTo(0, savedPosition);
   }
   if (!window.__autoCommentListenerRegistered) {
     window.__autoCommentListenerRegistered = true;
@@ -413,6 +537,27 @@
               sendResponse({ success: false, error: "\u64CD\u4F5C\u6267\u884C\u5931\u8D25" });
             }
           })();
+          return true;
+        }
+        if (message.action === "scroll-to-comments") {
+          (async () => {
+            try {
+              const result = await scrollToComments();
+              sendResponse(result);
+            } catch (error) {
+              sendResponse({ success: false, found: false, scrolledTo: "bottom", previousScrollY: 0, error: error?.message || "\u6EDA\u52A8\u5931\u8D25" });
+            }
+          })();
+          return true;
+        }
+        if (message.action === "restore-scroll") {
+          try {
+            const { scrollY: savedScrollY } = message.payload;
+            restoreScrollPosition(savedScrollY);
+            sendResponse({ success: true });
+          } catch (error) {
+            sendResponse({ success: false, error: error?.message || "\u6062\u590D\u6EDA\u52A8\u4F4D\u7F6E\u5931\u8D25" });
+          }
           return true;
         }
         return true;

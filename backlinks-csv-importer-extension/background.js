@@ -125,7 +125,18 @@
     const lines = [];
     lines.push(`\u3010\u9875\u9762\u6807\u9898\u3011${snapshot.title}`);
     lines.push(`\u3010\u9875\u9762\u8BED\u8A00\u3011${snapshot.pageLang || "\u672A\u77E5"}`);
-    lines.push(`\u3010CAPTCHA\u3011${snapshot.hasCaptcha ? "\u662F" : "\u5426"}`);
+    lines.push(`\u3010\u9A8C\u8BC1\u7801\u7EBF\u7D22\u3011${snapshot.hasCaptcha ? "\u53D1\u73B0\u7EBF\u7D22" : "\u672A\u53D1\u73B0\u660E\u663E\u7EBF\u7D22"}`);
+    if (snapshot.captchaSignals && snapshot.captchaSignals.length > 0) {
+      for (const signal of snapshot.captchaSignals.slice(0, 5)) {
+        lines.push(`  - ${signal}`);
+      }
+    }
+    if (snapshot.captchaInfo) {
+      lines.push(`\u3010\u53EF\u81EA\u52A8\u8BC6\u522B\u9A8C\u8BC1\u7801\u3011\u662F`);
+      lines.push(`\u3010\u9A8C\u8BC1\u7801\u8F93\u5165\u6846\u3011${snapshot.captchaInfo.inputSelector}`);
+    } else {
+      lines.push(`\u3010\u53EF\u81EA\u52A8\u8BC6\u522B\u9A8C\u8BC1\u7801\u3011\u5426`);
+    }
     lines.push(`\u3010\u5141\u8BB8HTML\u3011${snapshot.htmlAllowed ? "\u662F" : "\u5426"}`);
     if (snapshot.errorMessages && snapshot.errorMessages.length > 0) {
       lines.push(`\u3010\u9875\u9762\u9519\u8BEF/\u63D0\u793A\u4FE1\u606F\u3011`);
@@ -182,7 +193,10 @@
 - \u5148 scroll \u5230\u8868\u5355\u533A\u57DF
 - \u6309\u987A\u5E8F\u586B\u5199\u6BCF\u4E2A\u9700\u8981\u7684\u5B57\u6BB5\uFF08\u540D\u79F0\u3001\u90AE\u7BB1\u3001URL\u3001\u8BC4\u8BBA\u7B49\uFF09
 - \u6700\u540E click \u63D0\u4EA4\u6309\u94AE
-- \u5982\u679C\u68C0\u6D4B\u5230 CAPTCHA\uFF0C\u4E0D\u8981\u6DFB\u52A0 click \u63D0\u4EA4\u7684\u64CD\u4F5C\uFF0C\u8BBE\u7F6E hasCaptcha \u4E3A true
+- \u4F60\u4F1A\u6536\u5230\u201C\u9A8C\u8BC1\u7801\u7EBF\u7D22\u201D\uFF0C\u4F46\u5FC5\u987B\u81EA\u5DF1\u7EFC\u5408\u8868\u5355\u7ED3\u6784\u3001\u6309\u94AE\u3001\u7EBF\u7D22\u5185\u5BB9\u5224\u65AD\u9875\u9762\u662F\u5426\u771F\u7684\u5B58\u5728\u9A8C\u8BC1\u7801
+- \u5982\u679C\u53EA\u662F\u53EF\u7591\u7EBF\u7D22\u4F46\u65E0\u6CD5\u786E\u8BA4\uFF0C\u4E0D\u8981\u56E0\u4E3A\u5355\u4E2A\u5173\u952E\u8BCD\u5C31\u5224\u5B9A\u4E3A\u6709\u9A8C\u8BC1\u7801
+- \u5982\u679C\u9875\u9762\u5B58\u5728\u53EF\u81EA\u52A8\u8BC6\u522B\u7684\u7B80\u5355\u56FE\u7247\u9A8C\u8BC1\u7801\uFF0C\u4E14\u5FEB\u7167\u4E2D\u63D0\u4F9B\u4E86\u9A8C\u8BC1\u7801\u8F93\u5165\u6846 selector\uFF0C\u53EF\u4EE5\u5728\u586B\u5199\u9A8C\u8BC1\u7801\u540E\u7EE7\u7EED\u70B9\u51FB\u63D0\u4EA4
+- \u53EA\u6709\u5728\u786E\u8BA4\u5B58\u5728\u590D\u6742\u9A8C\u8BC1\u7801\u3001\u4EBA\u5DE5\u9A8C\u8BC1\u3001\u6216\u65E0\u6CD5\u5B89\u5168\u81EA\u52A8\u5B8C\u6210\u65F6\uFF0C\u624D\u8BBE\u7F6E hasCaptcha \u4E3A true \u5E76\u4E14\u4E0D\u6DFB\u52A0 click \u63D0\u4EA4\u64CD\u4F5C
 - \u8BC4\u8BBA\u8981\u4E0E\u6587\u7AE0\u5185\u5BB9\u76F8\u5173\uFF0C\u81EA\u7136\u878D\u5165\u7528\u6237\u63D0\u4F9B\u7684\u94FE\u63A5\u4FE1\u606F
 - \u53EA\u586B\u5199\u4F60\u80FD\u786E\u5B9A\u7528\u9014\u7684\u5B57\u6BB5\uFF0C\u4E0D\u786E\u5B9A\u7684\u5B57\u6BB5\u8DF3\u8FC7\uFF08\u5982"\u524A\u9664\u30AD\u30FC"\u7B49\uFF09
 - selector \u5FC5\u987B\u4F7F\u7528\u5FEB\u7167\u4E2D\u63D0\u4F9B\u7684 selector \u503C\uFF0C\u4E0D\u8981\u81EA\u5DF1\u7F16\u9020
@@ -300,22 +314,22 @@
         cleaned = cleaned.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
       }
       const plan = JSON.parse(cleaned);
-      let finalActions = plan.actions;
+      let finalActions = Array.isArray(plan.actions) ? [...plan.actions] : [];
       let finalHasCaptcha = plan.hasCaptcha || false;
+      const submitIdx = finalActions.findIndex((a) => a.type === "click");
       if (captchaText && snapshot.captchaInfo) {
         const captchaAction = {
           type: "type",
           selector: snapshot.captchaInfo.inputSelector,
           value: captchaText
         };
-        const submitIdx = finalActions.findIndex((a) => a.type === "click");
         if (submitIdx >= 0) {
           finalActions = [...finalActions.slice(0, submitIdx), captchaAction, ...finalActions.slice(submitIdx)];
         } else {
           finalActions = [...finalActions, captchaAction];
         }
-        finalHasCaptcha = false;
-      } else if (captchaFailed) {
+        finalHasCaptcha = finalHasCaptcha && submitIdx < 0;
+      } else if (captchaFailed && finalHasCaptcha) {
         finalActions = finalActions.filter((a) => a.type !== "click");
         finalHasCaptcha = true;
       }
@@ -500,9 +514,182 @@
       return { success: false, error: "AI \u8FD4\u56DE\u89E3\u6790\u5931\u8D25" };
     }
   }
+  function buildVLVerifySystemPrompt() {
+    return `\u4F60\u662F\u4E00\u4E2A\u6D4F\u89C8\u5668\u81EA\u52A8\u5316\u52A9\u624B\uFF0C\u64C5\u957F\u901A\u8FC7\u622A\u56FE\u89C6\u89C9\u5206\u6790\u5224\u65AD\u7F51\u9875\u72B6\u6001\u3002
+\u7528\u6237\u521A\u521A\u5728\u4E00\u4E2A\u7F51\u9875\u4E0A\u63D0\u4EA4\u4E86\u8BC4\u8BBA\u8868\u5355\u3002\u4F60\u4F1A\u6536\u5230 1-2 \u5F20\u9875\u9762\u622A\u56FE\u548C\u4E00\u4EFD DOM \u5FEB\u7167\u6587\u672C\u3002
+
+\u3010\u91CD\u8981\u3011\u8BF7\u4F18\u5148\u4F9D\u636E\u622A\u56FE\u4E2D\u7684\u89C6\u89C9\u4FE1\u606F\u8FDB\u884C\u5224\u65AD\uFF0CDOM \u5FEB\u7167\u4EC5\u4F5C\u4E3A\u8F85\u52A9\u53C2\u8003\u3002
+
+\u8BF7\u6839\u636E\u4EE5\u4E0B\u89C6\u89C9\u4FE1\u53F7\u5224\u65AD\u63D0\u4EA4\u7ED3\u679C\uFF1A
+
+\u6210\u529F\u4FE1\u53F7\uFF08\u611F\u8C22/\u6210\u529F\u63D0\u793A\uFF09\uFF1A
+- \u9875\u9762\u663E\u793A"\u611F\u8C22"\u3001"Thank you"\u3001"\u30B3\u30E1\u30F3\u30C8\u3042\u308A\u304C\u3068\u3046"\u3001"\u8BC4\u8BBA\u6210\u529F"\u7B49\u611F\u8C22/\u6210\u529F\u63D0\u793A
+- \u8BC4\u8BBA\u51FA\u73B0\u5728\u8BC4\u8BBA\u5217\u8868\u4E2D\uFF08\u53EF\u4EE5\u770B\u5230\u521A\u63D0\u4EA4\u7684\u8BC4\u8BBA\u5185\u5BB9\uFF09
+- \u8868\u5355\u5DF2\u88AB\u6E05\u7A7A\uFF08\u8F93\u5165\u6846\u53D8\u4E3A\u7A7A\u767D\uFF09
+- \u51FA\u73B0"\u8BC4\u8BBA\u5F85\u5BA1\u6838"\u3001"awaiting moderation"\u3001"\u627F\u8A8D\u5F85\u3061"\u7B49\u63D0\u793A\uFF08\u8FD9\u4E5F\u662F\u6210\u529F\uFF09
+
+\u786E\u8BA4\u9875\u9762\u6309\u94AE\u4FE1\u53F7\uFF1A
+- \u9875\u9762\u663E\u793A\u8BC4\u8BBA\u9884\u89C8\u5185\u5BB9\uFF0C\u5E76\u6709"\u6295\u7A3F\u3059\u308B"\u3001"Submit"\u3001"\u786E\u8BA4\u63D0\u4EA4"\u3001"Post"\u7B49\u6309\u94AE
+- \u8FD9\u8868\u793A\u9700\u8981\u518D\u70B9\u51FB\u4E00\u6B21\u624D\u80FD\u771F\u6B63\u63D0\u4EA4
+
+\u9519\u8BEF\u63D0\u793A\u4FE1\u53F7\uFF1A
+- \u9875\u9762\u663E\u793A\u7EA2\u8272\u9519\u8BEF\u4FE1\u606F\u3001\u9A8C\u8BC1\u5931\u8D25\u63D0\u793A
+- \u51FA\u73B0"\u7981\u6B62\u30EF\u30FC\u30C9"\u3001"\u7981\u6B62\u8BCD"\u3001"banned word"\u7B49\u63D0\u793A
+- \u9A8C\u8BC1\u7801\u9519\u8BEF\u63D0\u793A
+
+\u8FD4\u56DE\u4E25\u683C\u7684 JSON \u683C\u5F0F\uFF08\u4E0D\u8981\u5305\u542B markdown \u4EE3\u7801\u5757\u6807\u8BB0\uFF09\uFF1A
+{
+  "status": "success" \u6216 "confirmation_page" \u6216 "error" \u6216 "unknown",
+  "message": "\u7B80\u77ED\u63CF\u8FF0\u5F53\u524D\u9875\u9762\u72B6\u6001",
+  "actions": [
+    { "type": "click", "selector": "\u9700\u8981\u70B9\u51FB\u7684\u6309\u94AE\u7684CSS\u9009\u62E9\u5668" }
+  ]
+}
+
+\u89C4\u5219\uFF1A
+- \u5982\u679C\u662F confirmation_page\uFF0Cactions \u4E2D\u5FC5\u987B\u5305\u542B\u70B9\u51FB\u771F\u6B63\u63D0\u4EA4\u6309\u94AE\u7684\u6307\u4EE4\uFF0Cselector \u4ECE DOM \u5FEB\u7167\u4E2D\u83B7\u53D6
+- \u5982\u679C\u662F success \u6216 error\uFF0Cactions \u4E3A\u7A7A\u6570\u7EC4
+- \u4F18\u5148\u770B\u622A\u56FE\u5224\u65AD\uFF0C\u622A\u56FE\u4E2D\u80FD\u770B\u5230\u7684\u89C6\u89C9\u4FE1\u53F7\u6BD4 DOM \u6587\u672C\u66F4\u53EF\u9760
+- \u5982\u679C\u622A\u56FE\u4E2D\u80FD\u770B\u5230\u8BC4\u8BBA\u5185\u5BB9\u51FA\u73B0\u5728\u9875\u9762\u4E0A\uFF0C\u5373\u4F7F DOM \u5FEB\u7167\u4E0D\u5B8C\u6574\uFF0C\u4E5F\u5E94\u5224\u5B9A\u4E3A success`;
+  }
+  function buildVLVerifyUserPrompt(snapshot, commentContent) {
+    const parts = [];
+    parts.push("\u3010DOM \u5FEB\u7167\u4FE1\u606F\uFF08\u8F85\u52A9\u53C2\u8003\uFF09\u3011");
+    parts.push(`\u9875\u9762\u6807\u9898: ${snapshot.title}`);
+    if (snapshot.pageLang) parts.push(`\u9875\u9762\u8BED\u8A00: ${snapshot.pageLang}`);
+    if (snapshot.errorMessages && snapshot.errorMessages.length > 0) {
+      parts.push("\u9875\u9762\u9519\u8BEF/\u63D0\u793A\u4FE1\u606F:");
+      for (const msg of snapshot.errorMessages.slice(0, 5)) {
+        parts.push(`  - ${msg}`);
+      }
+    }
+    if (snapshot.forms && snapshot.forms.length > 0) {
+      parts.push("");
+      parts.push("\u8868\u5355\u7ED3\u6784:");
+      for (const form of snapshot.forms) {
+        for (const el of form.elements) {
+          const desc = [`[${el.tag}]`];
+          if (el.type) desc.push(`type="${el.type}"`);
+          if (el.name) desc.push(`name="${el.name}"`);
+          if (el.text) desc.push(`text="${el.text}"`);
+          desc.push(`\u2192 ${el.selector}`);
+          parts.push(`  ${desc.join(" ")}`);
+        }
+      }
+    }
+    parts.push("");
+    parts.push(`\u9875\u9762\u6B63\u6587\u6458\u8981: ${snapshot.bodyExcerpt.substring(0, 1e3)}`);
+    if (commentContent?.trim()) {
+      parts.push("");
+      parts.push(`\u3010\u521A\u63D0\u4EA4\u7684\u8BC4\u8BBA\u5185\u5BB9\u3011${commentContent.trim()}`);
+    }
+    parts.push("");
+    parts.push("\u8BF7\u7ED3\u5408\u622A\u56FE\u548C\u4EE5\u4E0A\u4FE1\u606F\uFF0C\u5224\u65AD\u8BC4\u8BBA\u63D0\u4EA4\u7ED3\u679C\u5E76\u8FD4\u56DE JSON\u3002");
+    return parts.join("\n");
+  }
+  async function analyzePostSubmitWithScreenshot(params) {
+    if (!params.apiKey?.trim()) {
+      return { status: "unknown", message: "API Key \u7F3A\u5931" };
+    }
+    const userContent = [];
+    for (const screenshot of params.screenshots) {
+      userContent.push({ type: "image_url", image_url: { url: screenshot } });
+    }
+    userContent.push({
+      type: "text",
+      text: buildVLVerifyUserPrompt(params.snapshot, params.commentContent)
+    });
+    const body = JSON.stringify({
+      model: currentCaptchaModel,
+      messages: [
+        { role: "system", content: buildVLVerifySystemPrompt() },
+        { role: "user", content: userContent }
+      ],
+      response_format: { type: "json_object" },
+      enable_thinking: thinkingEnabled
+    });
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => abortController.abort(), 3e4);
+    let response;
+    try {
+      response = await fetch(DASHSCOPE_ENDPOINT, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${params.apiKey}`
+        },
+        body,
+        signal: abortController.signal
+      });
+    } catch (e) {
+      clearTimeout(timeout);
+      if (e?.name === "AbortError") {
+        return { status: "unknown", message: "VL \u5206\u6790\u8D85\u65F6\uFF0830s\uFF09" };
+      }
+      return { status: "unknown", message: "\u7F51\u7EDC\u9519\u8BEF" };
+    } finally {
+      clearTimeout(timeout);
+    }
+    if (!response.ok) {
+      return { status: "unknown", message: "VL \u6A21\u578B\u670D\u52A1\u5F02\u5E38" };
+    }
+    try {
+      const data = await response.json();
+      const content = data?.choices?.[0]?.message?.content;
+      if (!content) return { status: "unknown", message: "VL \u8FD4\u56DE\u4E3A\u7A7A" };
+      let cleaned = content.trim();
+      if (cleaned.startsWith("```")) {
+        cleaned = cleaned.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
+      }
+      const result = JSON.parse(cleaned);
+      const validStatuses = ["success", "error", "confirmation_page", "unknown"];
+      if (!validStatuses.includes(result.status)) {
+        return { status: "unknown", message: "VL \u8FD4\u56DE\u65E0\u6548\u72B6\u6001" };
+      }
+      return result;
+    } catch {
+      return { status: "unknown", message: "VL \u8FD4\u56DE\u89E3\u6790\u5931\u8D25" };
+    }
+  }
 
   // src/background.ts
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+  var MAX_SCREENSHOT_BYTES = 512e3;
+  async function captureScreenshot(tabId) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      const windowId = tab.windowId;
+      const url = tab.url || "";
+      const qualities = [80, 60, 40, 20];
+      let screenshot;
+      for (const quality of qualities) {
+        const dataUrl = await chrome.tabs.captureVisibleTab(windowId, {
+          format: "jpeg",
+          quality
+        });
+        const prefixEnd = dataUrl.indexOf(",");
+        const base64Data = prefixEnd >= 0 ? dataUrl.substring(prefixEnd + 1) : dataUrl;
+        if (base64Data.length <= MAX_SCREENSHOT_BYTES) {
+          screenshot = dataUrl;
+          break;
+        }
+        if (quality === qualities[qualities.length - 1]) {
+          screenshot = dataUrl;
+        }
+      }
+      if (!screenshot) {
+        return { success: false, error: "\u622A\u56FE\u6570\u636E\u4E3A\u7A7A" };
+      }
+      return {
+        success: true,
+        screenshot,
+        url,
+        timestamp: Date.now()
+      };
+    } catch (e) {
+      return { success: false, error: "\u622A\u56FE\u5931\u8D25: " + (e?.message || e) };
+    }
+  }
   async function ensureContentScript(tabId) {
     await chrome.scripting.executeScript({
       target: { tabId },
@@ -595,6 +782,61 @@
           sendResponse(r);
         } catch (e) {
           sendResponse({ success: false, error: "\u9A8C\u8BC1\u7801\u8BC6\u522B\u5931\u8D25: " + (e?.message || e) });
+        }
+      })();
+      return true;
+    }
+    if (action === "capture-screenshot") {
+      const { tabId } = payload;
+      (async () => {
+        try {
+          const r = await captureScreenshot(tabId);
+          sendResponse(r);
+        } catch (e) {
+          sendResponse({ success: false, error: "\u622A\u56FE\u5931\u8D25: " + (e?.message || e) });
+        }
+      })();
+      return true;
+    }
+    if (action === "scroll-and-capture") {
+      const { tabId } = payload;
+      (async () => {
+        try {
+          await ensureContentScript(tabId);
+          const scrollResult = await chrome.tabs.sendMessage(tabId, {
+            action: "scroll-to-comments",
+            payload: {}
+          });
+          const screenshotResult = await captureScreenshot(tabId);
+          if (scrollResult?.previousScrollY !== void 0) {
+            await chrome.tabs.sendMessage(tabId, {
+              action: "restore-scroll",
+              payload: { scrollY: scrollResult.previousScrollY }
+            });
+          }
+          sendResponse({
+            screenshot2: screenshotResult.success ? screenshotResult.screenshot : null,
+            scrollResult
+          });
+        } catch (e) {
+          sendResponse({ screenshot2: null, scrollResult: null, error: "\u6EDA\u52A8\u622A\u56FE\u5931\u8D25: " + (e?.message || e) });
+        }
+      })();
+      return true;
+    }
+    if (action === "post-submit-analyze-vl") {
+      const vlPayload = payload;
+      (async () => {
+        try {
+          const r = await analyzePostSubmitWithScreenshot({
+            screenshots: vlPayload.screenshots,
+            snapshot: vlPayload.snapshot,
+            apiKey: vlPayload.apiKey,
+            commentContent: vlPayload.commentContent
+          });
+          sendResponse({ success: true, ...r });
+        } catch (e) {
+          sendResponse({ success: false, status: "unknown", message: "VL \u5206\u6790\u5931\u8D25: " + (e?.message || e) });
         }
       })();
       return true;

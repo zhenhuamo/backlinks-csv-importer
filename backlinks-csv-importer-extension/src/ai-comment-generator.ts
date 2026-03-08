@@ -207,7 +207,18 @@ function snapshotToText(snapshot: PageSnapshot): string {
   const lines: string[] = [];
   lines.push(`【页面标题】${snapshot.title}`);
   lines.push(`【页面语言】${snapshot.pageLang || '未知'}`);
-  lines.push(`【CAPTCHA】${snapshot.hasCaptcha ? '是' : '否'}`);
+  lines.push(`【验证码线索】${snapshot.hasCaptcha ? '发现线索' : '未发现明显线索'}`);
+  if (snapshot.captchaSignals && snapshot.captchaSignals.length > 0) {
+    for (const signal of snapshot.captchaSignals.slice(0, 5)) {
+      lines.push(`  - ${signal}`);
+    }
+  }
+  if (snapshot.captchaInfo) {
+    lines.push(`【可自动识别验证码】是`);
+    lines.push(`【验证码输入框】${snapshot.captchaInfo.inputSelector}`);
+  } else {
+    lines.push(`【可自动识别验证码】否`);
+  }
   lines.push(`【允许HTML】${snapshot.htmlAllowed ? '是' : '否'}`);
   if (snapshot.errorMessages && snapshot.errorMessages.length > 0) {
     lines.push(`【页面错误/提示信息】`);
@@ -270,7 +281,10 @@ function buildAnalyzeSystemPrompt(): string {
 - 先 scroll 到表单区域
 - 按顺序填写每个需要的字段（名称、邮箱、URL、评论等）
 - 最后 click 提交按钮
-- 如果检测到 CAPTCHA，不要添加 click 提交的操作，设置 hasCaptcha 为 true
+- 你会收到“验证码线索”，但必须自己综合表单结构、按钮、线索内容判断页面是否真的存在验证码
+- 如果只是可疑线索但无法确认，不要因为单个关键词就判定为有验证码
+- 如果页面存在可自动识别的简单图片验证码，且快照中提供了验证码输入框 selector，可以在填写验证码后继续点击提交
+- 只有在确认存在复杂验证码、人工验证、或无法安全自动完成时，才设置 hasCaptcha 为 true 并且不添加 click 提交操作
 - 评论要与文章内容相关，自然融入用户提供的链接信息
 - 只填写你能确定用途的字段，不确定的字段跳过（如"削除キー"等）
 - selector 必须使用快照中提供的 selector 值，不要自己编造
@@ -427,8 +441,9 @@ export async function analyzePageAndPlan(
       hasCaptcha?: boolean;
     };
 
-    let finalActions = plan.actions;
+    let finalActions = Array.isArray(plan.actions) ? [...plan.actions] : [];
     let finalHasCaptcha = plan.hasCaptcha || false;
+    const submitIdx = finalActions.findIndex((a: AIAction) => a.type === 'click');
 
     if (captchaText && snapshot.captchaInfo) {
       // 验证码识别成功：在提交按钮点击前插入验证码填写操作
@@ -437,14 +452,13 @@ export async function analyzePageAndPlan(
         selector: snapshot.captchaInfo.inputSelector,
         value: captchaText,
       };
-      const submitIdx = finalActions.findIndex((a: AIAction) => a.type === 'click');
       if (submitIdx >= 0) {
         finalActions = [...finalActions.slice(0, submitIdx), captchaAction, ...finalActions.slice(submitIdx)];
       } else {
         finalActions = [...finalActions, captchaAction];
       }
-      finalHasCaptcha = false;
-    } else if (captchaFailed) {
+      finalHasCaptcha = finalHasCaptcha && submitIdx < 0;
+    } else if (captchaFailed && finalHasCaptcha) {
       // 验证码识别失败：移除提交操作，标记需要手动处理
       finalActions = finalActions.filter((a: AIAction) => a.type !== 'click');
       finalHasCaptcha = true;
@@ -690,5 +704,193 @@ export async function retryWithErrorContext(
     };
   } catch {
     return { success: false, error: 'AI 返回解析失败' };
+  }
+}
+
+
+// ============================================================
+// 截图 + VL 视觉模型验证：提交后截图分析
+// ============================================================
+
+export interface VLAnalyzeParams {
+  screenshots: string[];       // 1-2 张截图的 base64 数据
+  snapshot: PageSnapshot;      // DOM 快照
+  apiKey: string;
+  commentContent?: string;     // 刚提交的评论内容
+}
+
+/**
+ * 构建 VL 验证的 system prompt
+ * 包含视觉信号关键词，指示模型优先依据截图视觉信息判断
+ */
+export function buildVLVerifySystemPrompt(): string {
+  return `你是一个浏览器自动化助手，擅长通过截图视觉分析判断网页状态。
+用户刚刚在一个网页上提交了评论表单。你会收到 1-2 张页面截图和一份 DOM 快照文本。
+
+【重要】请优先依据截图中的视觉信息进行判断，DOM 快照仅作为辅助参考。
+
+请根据以下视觉信号判断提交结果：
+
+成功信号（感谢/成功提示）：
+- 页面显示"感谢"、"Thank you"、"コメントありがとう"、"评论成功"等感谢/成功提示
+- 评论出现在评论列表中（可以看到刚提交的评论内容）
+- 表单已被清空（输入框变为空白）
+- 出现"评论待审核"、"awaiting moderation"、"承認待ち"等提示（这也是成功）
+
+确认页面按钮信号：
+- 页面显示评论预览内容，并有"投稿する"、"Submit"、"确认提交"、"Post"等按钮
+- 这表示需要再点击一次才能真正提交
+
+错误提示信号：
+- 页面显示红色错误信息、验证失败提示
+- 出现"禁止ワード"、"禁止词"、"banned word"等提示
+- 验证码错误提示
+
+返回严格的 JSON 格式（不要包含 markdown 代码块标记）：
+{
+  "status": "success" 或 "confirmation_page" 或 "error" 或 "unknown",
+  "message": "简短描述当前页面状态",
+  "actions": [
+    { "type": "click", "selector": "需要点击的按钮的CSS选择器" }
+  ]
+}
+
+规则：
+- 如果是 confirmation_page，actions 中必须包含点击真正提交按钮的指令，selector 从 DOM 快照中获取
+- 如果是 success 或 error，actions 为空数组
+- 优先看截图判断，截图中能看到的视觉信号比 DOM 文本更可靠
+- 如果截图中能看到评论内容出现在页面上，即使 DOM 快照不完整，也应判定为 success`;
+}
+
+/**
+ * 构建 VL 验证的 user prompt（文本部分）
+ * 将 DOM 快照文本和评论内容组合
+ */
+export function buildVLVerifyUserPrompt(snapshot: PageSnapshot, commentContent?: string): string {
+  const parts: string[] = [];
+
+  parts.push('【DOM 快照信息（辅助参考）】');
+  parts.push(`页面标题: ${snapshot.title}`);
+  if (snapshot.pageLang) parts.push(`页面语言: ${snapshot.pageLang}`);
+
+  if (snapshot.errorMessages && snapshot.errorMessages.length > 0) {
+    parts.push('页面错误/提示信息:');
+    for (const msg of snapshot.errorMessages.slice(0, 5)) {
+      parts.push(`  - ${msg}`);
+    }
+  }
+
+  if (snapshot.forms && snapshot.forms.length > 0) {
+    parts.push('');
+    parts.push('表单结构:');
+    for (const form of snapshot.forms) {
+      for (const el of form.elements) {
+        const desc: string[] = [`[${el.tag}]`];
+        if (el.type) desc.push(`type="${el.type}"`);
+        if (el.name) desc.push(`name="${el.name}"`);
+        if (el.text) desc.push(`text="${el.text}"`);
+        desc.push(`→ ${el.selector}`);
+        parts.push(`  ${desc.join(' ')}`);
+      }
+    }
+  }
+
+  parts.push('');
+  parts.push(`页面正文摘要: ${snapshot.bodyExcerpt.substring(0, 1000)}`);
+
+  if (commentContent?.trim()) {
+    parts.push('');
+    parts.push(`【刚提交的评论内容】${commentContent.trim()}`);
+  }
+
+  parts.push('');
+  parts.push('请结合截图和以上信息，判断评论提交结果并返回 JSON。');
+
+  return parts.join('\n');
+}
+
+/**
+ * 使用 VL 视觉模型分析截图 + DOM 快照，判断评论提交结果
+ * 返回与现有 PostSubmitResult 兼容的结果
+ */
+export async function analyzePostSubmitWithScreenshot(
+  params: VLAnalyzeParams
+): Promise<PostSubmitResult> {
+  if (!params.apiKey?.trim()) {
+    return { status: 'unknown', message: 'API Key 缺失' };
+  }
+
+  const userContent: Array<{ type: string; image_url?: { url: string }; text?: string }> = [];
+
+  // 添加截图（1-2 张）
+  for (const screenshot of params.screenshots) {
+    userContent.push({ type: 'image_url', image_url: { url: screenshot } });
+  }
+
+  // 添加文本部分
+  userContent.push({
+    type: 'text',
+    text: buildVLVerifyUserPrompt(params.snapshot, params.commentContent),
+  });
+
+  const body = JSON.stringify({
+    model: currentCaptchaModel,
+    messages: [
+      { role: 'system', content: buildVLVerifySystemPrompt() },
+      { role: 'user', content: userContent },
+    ],
+    response_format: { type: 'json_object' },
+    enable_thinking: thinkingEnabled,
+  });
+
+  const abortController = new AbortController();
+  const timeout = setTimeout(() => abortController.abort(), 30000);
+
+  let response: Response;
+  try {
+    response = await fetch(DASHSCOPE_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${params.apiKey}`,
+      },
+      body,
+      signal: abortController.signal,
+    });
+  } catch (e: any) {
+    clearTimeout(timeout);
+    if (e?.name === 'AbortError') {
+      return { status: 'unknown', message: 'VL 分析超时（30s）' };
+    }
+    return { status: 'unknown', message: '网络错误' };
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  if (!response.ok) {
+    return { status: 'unknown', message: 'VL 模型服务异常' };
+  }
+
+  try {
+    const data = await response.json();
+    const content = data?.choices?.[0]?.message?.content;
+    if (!content) return { status: 'unknown', message: 'VL 返回为空' };
+
+    let cleaned = content.trim();
+    if (cleaned.startsWith('```')) {
+      cleaned = cleaned.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
+    }
+
+    const result = JSON.parse(cleaned) as PostSubmitResult;
+
+    // Validate status
+    const validStatuses = ['success', 'error', 'confirmation_page', 'unknown'];
+    if (!validStatuses.includes(result.status)) {
+      return { status: 'unknown', message: 'VL 返回无效状态' };
+    }
+
+    return result;
+  } catch {
+    return { status: 'unknown', message: 'VL 返回解析失败' };
   }
 }

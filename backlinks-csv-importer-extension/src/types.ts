@@ -155,7 +155,11 @@ export type MessageAction =
   | 'snapshot-page'
   | 'ai-analyze'
   | 'execute-actions'
-  | 'captcha-recognize';
+  | 'captcha-recognize'
+  | 'capture-screenshot'
+  | 'scroll-to-comments'
+  | 'restore-scroll'
+  | 'post-submit-analyze-vl';
 
 export interface Message {
   action: MessageAction;
@@ -191,6 +195,7 @@ export interface PageSnapshot {
     elements: SnapshotElement[];
   }[];
   hasCaptcha: boolean;
+  captchaSignals?: string[];
   captchaInfo?: CaptchaInfo;
   htmlAllowed: boolean;
   errorMessages?: string[];
@@ -210,5 +215,31 @@ export interface AIAnalyzeResult {
   comment?: string;
   actions?: AIAction[];
   hasCaptcha?: boolean;
+  error?: string;
+}
+
+/** 截图结果 */
+export interface ScreenshotResult {
+  success: boolean;
+  screenshot?: string;   // base64 JPEG (data:image/jpeg;base64,...)
+  url?: string;          // 截图时的页面 URL
+  timestamp?: number;    // 截图时间戳 (Date.now())
+  error?: string;
+}
+
+/** 截图验证请求参数 */
+export interface VLVerifyPayload {
+  screenshots: string[];       // 1-2 张截图 base64
+  snapshot: PageSnapshot;      // DOM 快照
+  apiKey: string;
+  commentContent?: string;
+}
+
+/** 滚动到评论区结果 */
+export interface ScrollToCommentsResult {
+  success: boolean;
+  found: boolean;              // 是否找到评论区域
+  scrolledTo: 'comments' | 'bottom';
+  previousScrollY: number;     // 滚动前的位置（用于恢复）
   error?: string;
 }
