@@ -1,5 +1,112 @@
 "use strict";
 (() => {
+  // src/form-field-heuristics.ts
+  var HONEYPOT_TEXT_PATTERNS = [
+    "leave this field empty",
+    "we use this field to detect spam bots",
+    "if you fill this in, you will be marked as a spammer",
+    "marked as a spammer",
+    "do not fill",
+    "anti-spam",
+    "honeypot"
+  ];
+  var HONEYPOT_ATTR_PATTERNS = [
+    "honeypot",
+    "captcha2_h",
+    "-hp",
+    "_hp",
+    "hp-"
+  ];
+  function normalizeText(value) {
+    return (value || "").trim().toLowerCase();
+  }
+  function isTextEntryControl(el) {
+    if (el instanceof HTMLTextAreaElement) return true;
+    if (!(el instanceof HTMLInputElement)) return false;
+    const inputType = normalizeText(el.type || "text");
+    return ![
+      "hidden",
+      "checkbox",
+      "radio",
+      "submit",
+      "button",
+      "reset",
+      "range",
+      "color",
+      "date",
+      "datetime-local",
+      "month",
+      "time",
+      "week",
+      "file",
+      "image"
+    ].includes(inputType);
+  }
+  function hasVisuallyHiddenStyles(style) {
+    const clip = normalizeText(style.clip);
+    const clipPath = normalizeText(style.clipPath);
+    return clip.includes("rect(1px, 1px, 1px, 1px)") || clip.includes("rect(0px, 0px, 0px, 0px)") || clipPath.includes("inset(50%)") || clipPath.includes("circle(0") || style.pointerEvents === "none";
+  }
+  function isOffscreen(rect) {
+    return rect.right < -50 || rect.bottom < -50 || rect.left < -500 || rect.top < -500;
+  }
+  function getFieldSignals(el) {
+    return [
+      el.getAttribute("name"),
+      el.getAttribute("id"),
+      el.getAttribute("placeholder"),
+      el.getAttribute("aria-label"),
+      el.getAttribute("class"),
+      el.getAttribute("autocomplete"),
+      el.getAttribute("data-form-type"),
+      el.textContent
+    ].map(normalizeText).filter(Boolean);
+  }
+  function isLikelyHoneypotField(el) {
+    const signals = getFieldSignals(el);
+    if (signals.some((signal) => HONEYPOT_TEXT_PATTERNS.some((pattern) => signal.includes(pattern)))) {
+      return true;
+    }
+    if (signals.some((signal) => HONEYPOT_ATTR_PATTERNS.some((pattern) => signal.includes(pattern)))) {
+      return true;
+    }
+    const ariaHidden = normalizeText(el.getAttribute("aria-hidden")) === "true";
+    const tabIndex = el.getAttribute("tabindex");
+    if (ariaHidden && tabIndex === "-1") {
+      return true;
+    }
+    return false;
+  }
+  function isElementVisibleForInteraction(el) {
+    if (!(el instanceof HTMLElement)) return false;
+    if (el.hidden) return false;
+    if (normalizeText(el.getAttribute("aria-hidden")) === "true") return false;
+    if (el instanceof HTMLInputElement && normalizeText(el.type) === "hidden") return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") {
+      return false;
+    }
+    if (hasVisuallyHiddenStyles(style)) return false;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    if (isOffscreen(rect)) return false;
+    if (isTextEntryControl(el) && (rect.width < 24 || rect.height < 8)) {
+      return false;
+    }
+    return true;
+  }
+  function shouldExposeElementToAI(el) {
+    if (!isElementVisibleForInteraction(el)) return false;
+    if (isLikelyHoneypotField(el)) return false;
+    return true;
+  }
+  function isSafeActionTarget(el, actionType) {
+    if (!(el instanceof HTMLElement)) return false;
+    if (actionType === "scroll") return true;
+    if (isLikelyHoneypotField(el)) return false;
+    return isElementVisibleForInteraction(el);
+  }
+
   // src/content-script.ts
   if (window.__autoCommentInjected) {
   } else {
@@ -10,14 +117,11 @@
   var COMPLEX_CAPTCHA_SELECTORS = [".g-recaptcha", '[class*="recaptcha"]', '[class*="hcaptcha"]', "[data-sitekey]"];
   var COMMENT_FIELD_KEYWORDS = ["comment", "message", "content", "review", "reply", "\u7559\u8A00", "\u8BC4\u8BBA", "\u8A55\u8AD6", "\u30B3\u30E1\u30F3\u30C8", "\u672C\u6587"];
   var IDENTITY_FIELD_KEYWORDS = ["author", "name", "email", "mail", "url", "website", "homepage", "\u6635\u79F0", "\u59D3\u540D", "\u540D\u524D"];
-  function normalizeText(value) {
+  function normalizeText2(value) {
     return (value || "").trim().toLowerCase();
   }
   function isElementVisible(el) {
-    const node = el;
-    const style = window.getComputedStyle(node);
-    const rect = node.getBoundingClientRect();
-    return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0" && rect.width > 0 && rect.height > 0;
+    return isElementVisibleForInteraction(el);
   }
   function elementMatchesKeywords(el, keywords) {
     const attrs = [
@@ -29,7 +133,7 @@
       el.textContent
     ];
     return attrs.some((attr) => {
-      const normalized = normalizeText(attr);
+      const normalized = normalizeText2(attr);
       return normalized && keywords.some((kw) => normalized.includes(kw.toLowerCase()));
     });
   }
@@ -73,7 +177,7 @@
       }
       const iframes = scope.querySelectorAll("iframe");
       for (const iframe of iframes) {
-        const src = normalizeText(iframe.getAttribute("src"));
+        const src = normalizeText2(iframe.getAttribute("src"));
         if (src && (src.includes("captcha") || src.includes("recaptcha") || src.includes("hcaptcha")) && isElementVisible(iframe)) {
           signals.add(`\u9A8C\u8BC1\u7801 iframe: ${buildSelector(iframe)}`);
         }
@@ -283,6 +387,7 @@
         const tag = el.tagName.toLowerCase();
         const inputType = el.getAttribute("type") || void 0;
         if (inputType === "hidden") continue;
+        if (!shouldExposeElementToAI(el)) continue;
         const entry = {
           selector: buildSelector(el),
           tag,
@@ -451,6 +556,9 @@
       const el = document.querySelector(action.selector);
       if (!el) {
         return { success: false, error: `\u627E\u4E0D\u5230\u5143\u7D20: ${action.selector}` };
+      }
+      if (!isSafeActionTarget(el, action.type)) {
+        return { success: false, error: `\u5143\u7D20\u4E0D\u53EF\u5B89\u5168\u64CD\u4F5C: ${action.selector}` };
       }
       switch (action.type) {
         case "scroll":

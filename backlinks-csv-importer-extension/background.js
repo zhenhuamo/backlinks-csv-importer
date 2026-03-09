@@ -7,6 +7,7 @@
   var currentModel = DEFAULT_MODEL;
   var currentCaptchaModel = DEFAULT_CAPTCHA_MODEL;
   var thinkingEnabled = false;
+  var MULTIMODAL_MODELS = /* @__PURE__ */ new Set(["qwen3.5-flash", "qwen3.5-plus", "qwen-vl-plus"]);
   function buildSystemPrompt(htmlAllowed) {
     const linkFormatInstruction = htmlAllowed ? '\u5728\u8BC4\u8BBA\u4E2D\u4F7F\u7528 <a href="url">\u5173\u952E\u8BCD</a> \u7684 HTML \u683C\u5F0F\u5D4C\u5165\u94FE\u63A5\u3002' : "\u5728\u8BC4\u8BBA\u4E2D\u4EE5\u7EAF\u6587\u672C\u65B9\u5F0F\u81EA\u7136\u5730\u63D0\u53CA\u7F51\u5740\u548C\u5173\u952E\u8BCD\uFF0C\u4E0D\u8981\u4F7F\u7528\u4EFB\u4F55 HTML \u6807\u7B7E\u3002";
     return [
@@ -168,6 +169,8 @@
   function buildAnalyzeSystemPrompt() {
     return `\u4F60\u662F\u4E00\u4E2A\u6D4F\u89C8\u5668\u81EA\u52A8\u5316\u52A9\u624B\u3002\u7528\u6237\u4F1A\u7ED9\u4F60\u4E00\u4E2A\u7F51\u9875\u7684\u8868\u5355\u7ED3\u6784\u5FEB\u7167\u548C\u4E00\u7BC7\u6587\u7AE0\u7684\u5185\u5BB9\u6458\u8981\u3002
 
+\u6709\u65F6\u8FD8\u4F1A\u989D\u5916\u63D0\u4F9B 1-2 \u5F20\u9875\u9762\u622A\u56FE\u3002\u82E5\u63D0\u4F9B\u4E86\u622A\u56FE\uFF0C\u8BF7\u50CF\u771F\u4EBA\u4E00\u6837\u5148\u770B\u622A\u56FE\u4E2D\u7684\u53EF\u89C1\u8868\u5355\u533A\u57DF\uFF0C\u518D\u7ED3\u5408 DOM \u5FEB\u7167\u5224\u65AD\u5B57\u6BB5\u7528\u9014\u3002
+
 \u4F60\u7684\u4EFB\u52A1\uFF1A
 1. \u5206\u6790\u9875\u9762\u4E2D\u7684\u8BC4\u8BBA\u8868\u5355\uFF0C\u7406\u89E3\u6BCF\u4E2A\u5B57\u6BB5\u7684\u7528\u9014
 2. \u6839\u636E\u6587\u7AE0\u5185\u5BB9\u751F\u6210\u4E00\u6761\u81EA\u7136\u3001\u76F8\u5173\u7684\u8BC4\u8BBA\uFF082-3\u53E5\u8BDD\uFF09
@@ -200,6 +203,8 @@
 - \u8BC4\u8BBA\u8981\u4E0E\u6587\u7AE0\u5185\u5BB9\u76F8\u5173\uFF0C\u81EA\u7136\u878D\u5165\u7528\u6237\u63D0\u4F9B\u7684\u94FE\u63A5\u4FE1\u606F
 - \u53EA\u586B\u5199\u4F60\u80FD\u786E\u5B9A\u7528\u9014\u7684\u5B57\u6BB5\uFF0C\u4E0D\u786E\u5B9A\u7684\u5B57\u6BB5\u8DF3\u8FC7\uFF08\u5982"\u524A\u9664\u30AD\u30FC"\u7B49\uFF09
 - selector \u5FC5\u987B\u4F7F\u7528\u5FEB\u7167\u4E2D\u63D0\u4F9B\u7684 selector \u503C\uFF0C\u4E0D\u8981\u81EA\u5DF1\u7F16\u9020
+- \u4F18\u5148\u9009\u62E9\u622A\u56FE\u91CC\u8089\u773C\u53EF\u89C1\u3001\u5C3A\u5BF8\u6B63\u5E38\u3001\u4F4D\u4E8E\u8BC4\u8BBA\u533A\u4E2D\u7684\u8F93\u5165\u6846
+- \u5FFD\u7565\u4EFB\u4F55\u9690\u85CF\u3001\u6781\u5C0F\u3001\u88AB\u88C1\u526A\u3001\u5C4F\u5E55\u5916\u3001aria-hidden\u3001tabindex=-1\u3001\u6216\u660E\u663E\u7528\u4E8E\u53CD\u5783\u573E/\u871C\u7F50\u7684\u5B57\u6BB5
 
 \u5173\u4E8E URL/\u94FE\u63A5\u7684\u91CD\u8981\u89C4\u5219\uFF08\u6839\u636E\u8868\u5355\u7ED3\u6784\u7075\u6D3B\u5904\u7406\uFF09\uFF1A
 - \u3010\u60C5\u51B5A\uFF1A\u8868\u5355\u6709\u4E13\u95E8\u7684 URL/\u7F51\u5740\u5B57\u6BB5\u3011\u5982\u679C\u8868\u5355\u4E2D\u6709 name="url" \u6216 label \u5305\u542B "URL"\u3001"\u7F51\u5740"\u3001"\u30DB\u30FC\u30E0\u30DA\u30FC\u30B8"\u3001"Website" \u7684\u8F93\u5165\u6846\uFF1A
@@ -264,7 +269,28 @@
       "\u8BF7\u5206\u6790\u8868\u5355\u7ED3\u6784\uFF0C\u751F\u6210\u8BC4\u8BBA\uFF0C\u5E76\u8FD4\u56DE\u64CD\u4F5C\u6307\u4EE4 JSON\u3002"
     ].join("\n");
   }
-  async function analyzePageAndPlan(snapshot, template, apiKey) {
+  function buildVisionAwareUserContent(promptText, screenshots) {
+    if (!screenshots || screenshots.length === 0 || !MULTIMODAL_MODELS.has(currentModel)) {
+      return promptText;
+    }
+    const userContent = [];
+    for (const screenshot of screenshots.slice(0, 2)) {
+      userContent.push({ type: "image_url", image_url: { url: screenshot } });
+    }
+    userContent.push({
+      type: "text",
+      text: [
+        "\u3010\u89C6\u89C9\u5206\u6790\u8981\u6C42\u3011\u8BF7\u5148\u6839\u636E\u622A\u56FE\u5224\u65AD\u8BC4\u8BBA\u533A\u91CC\u771F\u6B63\u53EF\u89C1\u7684\u8F93\u5165\u6846\u548C\u63D0\u4EA4\u6309\u94AE\uFF0C\u518D\u7528 DOM \u5FEB\u7167\u4E2D\u7684 selector \u751F\u6210\u52A8\u4F5C\u3002",
+        promptText
+      ].join("\n\n")
+    });
+    return userContent;
+  }
+  function buildAnalyzeUserContent(snapshot, template, htmlAllowed, screenshots) {
+    const promptText = buildAnalyzeUserPrompt(snapshot, template, htmlAllowed);
+    return buildVisionAwareUserContent(promptText, screenshots);
+  }
+  async function analyzePageAndPlan(snapshot, template, apiKey, screenshots) {
     if (!apiKey?.trim()) {
       return { success: false, error: "\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u914D\u7F6E API Key" };
     }
@@ -282,7 +308,7 @@
       model: currentModel,
       messages: [
         { role: "system", content: buildAnalyzeSystemPrompt() },
-        { role: "user", content: buildAnalyzeUserPrompt(snapshot, template, snapshot.htmlAllowed) }
+        { role: "user", content: buildAnalyzeUserContent(snapshot, template, snapshot.htmlAllowed, screenshots) }
       ],
       response_format: { type: "json_object" },
       enable_thinking: thinkingEnabled
@@ -435,7 +461,7 @@
       return { status: "unknown", message: "AI \u8FD4\u56DE\u89E3\u6790\u5931\u8D25" };
     }
   }
-  async function retryWithErrorContext(snapshot, template, apiKey, errorMessage, failedComment, attemptNumber) {
+  async function retryWithErrorContext(snapshot, template, apiKey, errorMessage, failedComment, attemptNumber, screenshots) {
     if (!apiKey?.trim()) {
       return { success: false, error: "API Key \u7F3A\u5931" };
     }
@@ -472,7 +498,7 @@
       model: currentModel,
       messages: [
         { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt }
+        { role: "user", content: buildVisionAwareUserContent(userPrompt, screenshots) }
       ],
       response_format: { type: "json_object" },
       enable_thinking: thinkingEnabled
@@ -715,10 +741,10 @@
       return true;
     }
     if (action === "ai-analyze") {
-      const { snapshot, template, apiKey } = payload;
+      const { snapshot, template, apiKey, screenshots } = payload;
       (async () => {
         try {
-          const r = await analyzePageAndPlan(snapshot, template, apiKey);
+          const r = await analyzePageAndPlan(snapshot, template, apiKey, screenshots);
           sendResponse(r);
         } catch (e) {
           sendResponse({ success: false, error: "AI\u5206\u6790\u5931\u8D25: " + (e?.message || e) });
@@ -755,10 +781,10 @@
       return true;
     }
     if (action === "ai-retry-comment") {
-      const { snapshot, template, apiKey, errorMessage, failedComment, attemptNumber } = payload;
+      const { snapshot, template, apiKey, errorMessage, failedComment, attemptNumber, screenshots } = payload;
       (async () => {
         try {
-          const r = await retryWithErrorContext(snapshot, template, apiKey, errorMessage, failedComment, attemptNumber);
+          const r = await retryWithErrorContext(snapshot, template, apiKey, errorMessage, failedComment, attemptNumber, screenshots);
           sendResponse(r);
         } catch (e) {
           sendResponse({ success: false, error: "\u91CD\u8BD5\u5931\u8D25: " + (e?.message || e) });

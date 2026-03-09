@@ -82,10 +82,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (action === 'ai-analyze') {
-    const { snapshot, template, apiKey } = payload as any;
+    const { snapshot, template, apiKey, screenshots } = payload as any;
     (async () => {
       try {
-        const r = await analyzePageAndPlan(snapshot, template, apiKey);
+        const r = await analyzePageAndPlan(snapshot, template, apiKey, screenshots);
         sendResponse(r);
       } catch (e: any) {
         sendResponse({ success: false, error: 'AI分析失败: ' + (e?.message || e) });
@@ -127,13 +127,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   // AI 驱动流程：提交失败后重试（带错误上下文）
   if (action === 'ai-retry-comment') {
-    const { snapshot, template, apiKey, errorMessage, failedComment, attemptNumber } = payload as {
+    const { snapshot, template, apiKey, errorMessage, failedComment, attemptNumber, screenshots } = payload as {
       snapshot: any; template: any; apiKey: string;
-      errorMessage: string; failedComment: string; attemptNumber: number;
+      errorMessage: string; failedComment: string; attemptNumber: number; screenshots?: string[];
     };
     (async () => {
       try {
-        const r = await retryWithErrorContext(snapshot, template, apiKey, errorMessage, failedComment, attemptNumber);
+        const r = await retryWithErrorContext(snapshot, template, apiKey, errorMessage, failedComment, attemptNumber, screenshots);
         sendResponse(r);
       } catch (e: any) {
         sendResponse({ success: false, error: '重试失败: ' + (e?.message || e) });

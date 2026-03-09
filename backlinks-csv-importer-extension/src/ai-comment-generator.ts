@@ -24,6 +24,8 @@ let currentModel = DEFAULT_MODEL;
 let currentCaptchaModel = DEFAULT_CAPTCHA_MODEL;
 let thinkingEnabled = false;
 
+const MULTIMODAL_MODELS = new Set(['qwen3.5-flash', 'qwen3.5-plus', 'qwen-vl-plus']);
+
 export function setModel(model: string): void { currentModel = model; }
 export function setCaptchaModel(model: string): void { currentCaptchaModel = model; }
 export function getModel(): string { return currentModel; }
@@ -256,6 +258,8 @@ function snapshotToText(snapshot: PageSnapshot): string {
 function buildAnalyzeSystemPrompt(): string {
   return `你是一个浏览器自动化助手。用户会给你一个网页的表单结构快照和一篇文章的内容摘要。
 
+有时还会额外提供 1-2 张页面截图。若提供了截图，请像真人一样先看截图中的可见表单区域，再结合 DOM 快照判断字段用途。
+
 你的任务：
 1. 分析页面中的评论表单，理解每个字段的用途
 2. 根据文章内容生成一条自然、相关的评论（2-3句话）
@@ -288,6 +292,8 @@ function buildAnalyzeSystemPrompt(): string {
 - 评论要与文章内容相关，自然融入用户提供的链接信息
 - 只填写你能确定用途的字段，不确定的字段跳过（如"削除キー"等）
 - selector 必须使用快照中提供的 selector 值，不要自己编造
+- 优先选择截图里肉眼可见、尺寸正常、位于评论区中的输入框
+- 忽略任何隐藏、极小、被裁剪、屏幕外、aria-hidden、tabindex=-1、或明显用于反垃圾/蜜罐的字段
 
 关于 URL/链接的重要规则（根据表单结构灵活处理）：
 - 【情况A：表单有专门的 URL/网址字段】如果表单中有 name="url" 或 label 包含 "URL"、"网址"、"ホームページ"、"Website" 的输入框：
@@ -369,6 +375,38 @@ function buildAnalyzeUserPrompt(
   ].join('\n');
 }
 
+function buildVisionAwareUserContent(
+  promptText: string,
+  screenshots?: string[]
+): string | Array<{ type: string; image_url?: { url: string }; text?: string }> {
+  if (!screenshots || screenshots.length === 0 || !MULTIMODAL_MODELS.has(currentModel)) {
+    return promptText;
+  }
+
+  const userContent: Array<{ type: string; image_url?: { url: string }; text?: string }> = [];
+  for (const screenshot of screenshots.slice(0, 2)) {
+    userContent.push({ type: 'image_url', image_url: { url: screenshot } });
+  }
+  userContent.push({
+    type: 'text',
+    text: [
+      '【视觉分析要求】请先根据截图判断评论区里真正可见的输入框和提交按钮，再用 DOM 快照中的 selector 生成动作。',
+      promptText,
+    ].join('\n\n'),
+  });
+  return userContent;
+}
+
+function buildAnalyzeUserContent(
+  snapshot: PageSnapshot,
+  template: LinkTemplate,
+  htmlAllowed: boolean,
+  screenshots?: string[]
+): string | Array<{ type: string; image_url?: { url: string }; text?: string }> {
+  const promptText = buildAnalyzeUserPrompt(snapshot, template, htmlAllowed);
+  return buildVisionAwareUserContent(promptText, screenshots);
+}
+
 /**
  * AI 分析页面并规划操作
  * 一次 API 调用同时完成：评论生成 + 操作规划
@@ -376,7 +414,8 @@ function buildAnalyzeUserPrompt(
 export async function analyzePageAndPlan(
   snapshot: PageSnapshot,
   template: LinkTemplate,
-  apiKey: string
+  apiKey: string,
+  screenshots?: string[]
 ): Promise<AIAnalyzeResult> {
   if (!apiKey?.trim()) {
     return { success: false, error: '请先在设置中配置 API Key' };
@@ -398,7 +437,7 @@ export async function analyzePageAndPlan(
     model: currentModel,
     messages: [
       { role: 'system', content: buildAnalyzeSystemPrompt() },
-      { role: 'user', content: buildAnalyzeUserPrompt(snapshot, template, snapshot.htmlAllowed) },
+      { role: 'user', content: buildAnalyzeUserContent(snapshot, template, snapshot.htmlAllowed, screenshots) },
     ],
     response_format: { type: 'json_object' },
     enable_thinking: thinkingEnabled,
@@ -613,7 +652,8 @@ export async function retryWithErrorContext(
   apiKey: string,
   errorMessage: string,
   failedComment: string,
-  attemptNumber: number
+  attemptNumber: number,
+  screenshots?: string[]
 ): Promise<AIAnalyzeResult> {
   if (!apiKey?.trim()) {
     return { success: false, error: 'API Key 缺失' };
@@ -654,7 +694,7 @@ export async function retryWithErrorContext(
     model: currentModel,
     messages: [
       { role: 'system', content: systemPrompt },
-      { role: 'user', content: userPrompt },
+      { role: 'user', content: buildVisionAwareUserContent(userPrompt, screenshots) },
     ],
     response_format: { type: 'json_object' },
     enable_thinking: thinkingEnabled,

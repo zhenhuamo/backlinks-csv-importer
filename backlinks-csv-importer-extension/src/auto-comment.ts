@@ -178,6 +178,32 @@ async function captureAndVerify(
   }
 }
 
+async function capturePlanningScreenshots(tabId: number): Promise<string[]> {
+  const screenshots: string[] = [];
+
+  try {
+    const screenshot1Resp = await chrome.runtime.sendMessage({
+      action: 'capture-screenshot',
+      payload: { tabId },
+    });
+    if (screenshot1Resp?.success && screenshot1Resp.screenshot) {
+      screenshots.push(screenshot1Resp.screenshot);
+    }
+
+    const scrollCaptureResp = await chrome.runtime.sendMessage({
+      action: 'scroll-and-capture',
+      payload: { tabId },
+    });
+    if (scrollCaptureResp?.screenshot2) {
+      screenshots.push(scrollCaptureResp.screenshot2);
+    }
+  } catch {
+    return screenshots;
+  }
+
+  return screenshots;
+}
+
 /**
  * AI 驱动的自动评论流程：
  * 1. 截取页面快照
@@ -248,11 +274,14 @@ export async function runAutoComment(controller?: OperationController): Promise<
       return;
     }
 
+    updateStatus('正在采集页面视觉线索...', 'info');
+    const planningScreenshots = await capturePlanningScreenshots(tabId);
+
     // Step 2: AI 分析 + 生成评论 + 规划操作
     updateStatus('AI 正在理解页面并生成评论...', 'info');
     const analyzeResp = await chrome.runtime.sendMessage({
       action: 'ai-analyze',
-      payload: { snapshot, template, apiKey },
+      payload: { snapshot, template, apiKey, screenshots: planningScreenshots },
     });
     if (!analyzeResp?.success) {
       updateStatus(analyzeResp?.error || 'AI 分析失败', 'error');
@@ -375,9 +404,10 @@ export async function runAutoComment(controller?: OperationController): Promise<
             }
 
             // 重新 AI 分析（含新验证码识别）
+            const captchaRetryScreenshots = await capturePlanningScreenshots(tabId);
             const captchaRetryAnalyze = await chrome.runtime.sendMessage({
               action: 'ai-analyze',
-              payload: { snapshot: captchaSnapResp.snapshot, template, apiKey },
+              payload: { snapshot: captchaSnapResp.snapshot, template, apiKey, screenshots: captchaRetryScreenshots },
             });
             if (!captchaRetryAnalyze?.success || !captchaRetryAnalyze.actions?.length) {
               updateStatus('验证码重试失败: AI 分析失败', 'error');
@@ -422,6 +452,7 @@ export async function runAutoComment(controller?: OperationController): Promise<
           }
 
           // 用带错误上下文的重试接口，让 AI 理解问题并修正
+          const retryScreenshots = await capturePlanningScreenshots(tabId);
           const retryAnalyze = await chrome.runtime.sendMessage({
             action: 'ai-retry-comment',
             payload: {
@@ -431,6 +462,7 @@ export async function runAutoComment(controller?: OperationController): Promise<
               errorMessage: errMsg,
               failedComment: lastComment,
               attemptNumber: retryCount,
+              screenshots: retryScreenshots,
             },
           });
           if (!retryAnalyze?.success || !retryAnalyze.actions?.length) {

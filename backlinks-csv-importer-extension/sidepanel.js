@@ -1395,6 +1395,28 @@
       }
     }
   }
+  async function capturePlanningScreenshots(tabId) {
+    const screenshots = [];
+    try {
+      const screenshot1Resp = await chrome.runtime.sendMessage({
+        action: "capture-screenshot",
+        payload: { tabId }
+      });
+      if (screenshot1Resp?.success && screenshot1Resp.screenshot) {
+        screenshots.push(screenshot1Resp.screenshot);
+      }
+      const scrollCaptureResp = await chrome.runtime.sendMessage({
+        action: "scroll-and-capture",
+        payload: { tabId }
+      });
+      if (scrollCaptureResp?.screenshot2) {
+        screenshots.push(scrollCaptureResp.screenshot2);
+      }
+    } catch {
+      return screenshots;
+    }
+    return screenshots;
+  }
   async function runAutoComment(controller) {
     const btn = document.getElementById("auto-comment-btn");
     let formSubmitted = false;
@@ -1442,10 +1464,12 @@
         updateStatus("\u672A\u5728\u9875\u9762\u4E2D\u68C0\u6D4B\u5230\u8BC4\u8BBA\u8868\u5355", "error");
         return;
       }
+      updateStatus("\u6B63\u5728\u91C7\u96C6\u9875\u9762\u89C6\u89C9\u7EBF\u7D22...", "info");
+      const planningScreenshots = await capturePlanningScreenshots(tabId);
       updateStatus("AI \u6B63\u5728\u7406\u89E3\u9875\u9762\u5E76\u751F\u6210\u8BC4\u8BBA...", "info");
       const analyzeResp = await chrome.runtime.sendMessage({
         action: "ai-analyze",
-        payload: { snapshot, template, apiKey }
+        payload: { snapshot, template, apiKey, screenshots: planningScreenshots }
       });
       if (!analyzeResp?.success) {
         updateStatus(analyzeResp?.error || "AI \u5206\u6790\u5931\u8D25", "error");
@@ -1533,9 +1557,10 @@
                 updateStatus("\u9A8C\u8BC1\u7801\u91CD\u8BD5\u5931\u8D25: \u65E0\u6CD5\u83B7\u53D6\u9875\u9762\u5FEB\u7167", "error");
                 return;
               }
+              const captchaRetryScreenshots = await capturePlanningScreenshots(tabId);
               const captchaRetryAnalyze = await chrome.runtime.sendMessage({
                 action: "ai-analyze",
-                payload: { snapshot: captchaSnapResp.snapshot, template, apiKey }
+                payload: { snapshot: captchaSnapResp.snapshot, template, apiKey, screenshots: captchaRetryScreenshots }
               });
               if (!captchaRetryAnalyze?.success || !captchaRetryAnalyze.actions?.length) {
                 updateStatus("\u9A8C\u8BC1\u7801\u91CD\u8BD5\u5931\u8D25: AI \u5206\u6790\u5931\u8D25", "error");
@@ -1570,6 +1595,7 @@
               updateStatus("\u63D0\u4EA4\u5931\u8D25: " + errMsg, "error");
               return;
             }
+            const retryScreenshots = await capturePlanningScreenshots(tabId);
             const retryAnalyze = await chrome.runtime.sendMessage({
               action: "ai-retry-comment",
               payload: {
@@ -1578,7 +1604,8 @@
                 apiKey,
                 errorMessage: errMsg,
                 failedComment: lastComment,
-                attemptNumber: retryCount
+                attemptNumber: retryCount,
+                screenshots: retryScreenshots
               }
             });
             if (!retryAnalyze?.success || !retryAnalyze.actions?.length) {

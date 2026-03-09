@@ -12,6 +12,7 @@ if ((window as any).__autoCommentInjected) {
 }
 
 import { PageSnapshot, SnapshotElement, AIAction, CaptchaInfo, ScrollToCommentsResult } from './types';
+import { isElementVisibleForInteraction, shouldExposeElementToAI, isSafeActionTarget } from './form-field-heuristics';
 
 /** 验证码图片检测关键词（避免使用过泛的 verify / verification） */
 const CAPTCHA_IMAGE_KEYWORDS = ['captcha', 'seccode', '验证码', '驗證碼', '認証', '認証コード'];
@@ -30,14 +31,7 @@ function normalizeText(value: string | null | undefined): string {
 }
 
 function isElementVisible(el: Element): boolean {
-  const node = el as HTMLElement;
-  const style = window.getComputedStyle(node);
-  const rect = node.getBoundingClientRect();
-  return style.display !== 'none'
-    && style.visibility !== 'hidden'
-    && style.opacity !== '0'
-    && rect.width > 0
-    && rect.height > 0;
+  return isElementVisibleForInteraction(el);
 }
 
 function elementMatchesKeywords(el: Element, keywords: string[]): boolean {
@@ -381,6 +375,7 @@ export async function capturePageSnapshot(): Promise<PageSnapshot> {
 
       // 跳过 hidden 字段
       if (inputType === 'hidden') continue;
+      if (!shouldExposeElementToAI(el)) continue;
 
       const entry: SnapshotElement = {
         selector: buildSelector(el),
@@ -584,6 +579,10 @@ export async function executeActions(actions: AIAction[]): Promise<{ success: bo
     const el = document.querySelector(action.selector);
     if (!el) {
       return { success: false, error: `找不到元素: ${action.selector}` };
+    }
+
+    if (!isSafeActionTarget(el, action.type)) {
+      return { success: false, error: `元素不可安全操作: ${action.selector}` };
     }
 
     switch (action.type) {
